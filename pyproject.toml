@@ -85,6 +85,6 @@ packages = ["repyable"]
 python_files = ["test_*.py", "benchmark_*.py"]
 python_classes = ["Test*", "*Benchmark"]
 python_functions = ["test_*", "benchmark_*"]
-log_level = "DEBUG"
+log_level = "INFO"
 
 testpaths = ["tests"]

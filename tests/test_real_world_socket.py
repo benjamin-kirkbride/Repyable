@@ -59,10 +59,10 @@ def test_packet_loss(expected_loss_rate: float) -> None:
     client.start()
     server.start()
 
-    try:
-        # Set the packet loss rate
-        client.packet_loss_rate = expected_loss_rate
+    # Set the packet loss rate
+    client.packet_loss_rate = expected_loss_rate
 
+    try:
         # Send 1000 packets
         test_data = b"Test Packet"
         num_packets = 1000
@@ -76,7 +76,7 @@ def test_packet_loss(expected_loss_rate: float) -> None:
                 server.recv(1024)
                 received_packets += 1
             except TimeoutError:
-                continue
+                break
 
         # Calculate the actual loss rate
         actual_loss_rate = (num_packets - received_packets) / num_packets
