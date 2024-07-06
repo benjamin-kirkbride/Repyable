@@ -6,6 +6,13 @@ from typing import Callable, List, NamedTuple, Optional, Tuple
 
 
 class Packet(NamedTuple):
+    """
+    Represents a packet in the reliable communication protocol.
+
+    Attributes:
+        sequence (int): The sequence number of the packet.
+        data (bytes): The payload data of the packet.
+    """
     sequence: int
     data: bytes
 
