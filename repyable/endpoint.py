@@ -2,10 +2,22 @@ import socket
 import struct
 import threading
 import time
-from typing import Callable, List, NamedTuple, Optional, Tuple
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+# Format: sequence (2 bytes), ack (2 bytes), ack_bits (4 bytes)
+HEADER_FORMAT = "!HHI"
+
+# Format: fragment_id (1 byte), total_fragments (1 byte)
+FRAGMENT_FOOTER_FORMAT = "!BB"
+
+# Format: sequence (2 bytes), ack (2 bytes), ack_bits (4 bytes)
+# fragment_id (1 byte), total_fragments (1 byte)
+FRAGMENT_FORMAT = "!HHIBB"
 
 
-class Packet(NamedTuple):
+@dataclass
+class Packet:
     sequence: int
     data: bytes
     send_time: float = field(default_factory=time.time)
