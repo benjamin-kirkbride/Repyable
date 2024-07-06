@@ -2,17 +2,18 @@ import socket
 import struct
 import threading
 import time
-from typing import Callable, List, NamedTuple, Optional, Tuple
+from collections.abc import Callable
+from typing import NamedTuple
 
 
 class Packet(NamedTuple):
-    """
-    Represents a packet in the reliable communication protocol.
+    """Represents a packet in the reliable communication protocol.
 
     Attributes:
         sequence (int): The sequence number of the packet.
         data (bytes): The payload data of the packet.
     """
+
     sequence: int
     data: bytes
 
@@ -47,9 +48,9 @@ class ReliableEndpoint:
         self.process_packet_callback = process_packet_callback
 
         self.sequence = 0
-        self.acks: List[int] = []
-        self.sent_packets: List[Optional[Packet]] = [None] * sent_packets_buffer_size
-        self.received_packets: List[Optional[Packet]] = [
+        self.acks: list[int] = []
+        self.sent_packets: list[Packet | None] = [None] * sent_packets_buffer_size
+        self.received_packets: list[Packet | None] = [
             None
         ] * received_packets_buffer_size
         self.fragments: dict = {}
@@ -79,7 +80,7 @@ class ReliableEndpoint:
             try:
                 data, addr = self.sock.recvfrom(self.max_packet_size)
                 self._process_received_data(data)
-            except socket.timeout:
+            except TimeoutError:
                 pass
 
     def _process_received_data(self, data: bytes) -> None:
@@ -175,7 +176,7 @@ class ReliableEndpoint:
         self.sequence = (self.sequence + 1) % 65536
         return sequence
 
-    def _get_ack_data(self) -> Tuple[int, int]:
+    def _get_ack_data(self) -> tuple[int, int]:
         if not self.acks:
             return 0, 0
 
