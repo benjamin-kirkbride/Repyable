@@ -1,14 +1,16 @@
+"""Tests for the RealWorldUDPSocket class."""
+
 from tests.util.real_world_socket import RealWorldUDPSocket
 
 
-def test_real_world_udp_socket_send_recv():
+def test_real_world_udp_socket_send_recv() -> None:
     # Create two sockets
     socket1 = RealWorldUDPSocket()
     socket2 = RealWorldUDPSocket()
 
     # Bind socket2 to a specific address
-    socket2._socket.bind(("localhost", 0))
-    address = socket2._socket.getsockname()
+    socket2.bind(("localhost", 0))
+    address = socket2.getsockname()
 
     # Start the sockets
     socket1.start()
