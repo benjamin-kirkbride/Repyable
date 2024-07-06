@@ -41,12 +41,6 @@ def test_real_world_udp_socket_send_recv() -> None:
 
 
 def test_fifty_percent_packet_loss() -> None:
-    TIMEOUT_SECONDS = 5
-    EXPECTED_LOSS_RATE = 0.5
-    LOSS_RATE_TOLERANCE = 0.05
-    MIN_ACCEPTABLE_LOSS_RATE = EXPECTED_LOSS_RATE - LOSS_RATE_TOLERANCE
-    MAX_ACCEPTABLE_LOSS_RATE = EXPECTED_LOSS_RATE + LOSS_RATE_TOLERANCE
-
     client = RealWorldUDPSocket(name="client")
     server = RealWorldUDPSocket(name="server")
     server.settimeout(0.1)
@@ -59,7 +53,7 @@ def test_fifty_percent_packet_loss() -> None:
 
     try:
         # Set 50% packet loss rate
-        client.packet_loss_rate = EXPECTED_LOSS_RATE
+        client.packet_loss_rate = 0.5
 
         # Send 1000 packets
         test_data = b"Test Packet"
@@ -70,7 +64,7 @@ def test_fifty_percent_packet_loss() -> None:
         # Try to receive packets
         received_packets = 0
         start_time = time.time()
-        while time.time() - start_time < TIMEOUT_SECONDS:
+        while time.time() - start_time < 5:  # 5 seconds timeout
             try:
                 server.recv(1024)
                 received_packets += 1
@@ -81,10 +75,9 @@ def test_fifty_percent_packet_loss() -> None:
         loss_rate = (num_packets - received_packets) / num_packets
 
         # Assert that the loss rate is within 5% of 50%
-        assert MIN_ACCEPTABLE_LOSS_RATE <= loss_rate <= MAX_ACCEPTABLE_LOSS_RATE, (
-            f"Expected loss rate between {MIN_ACCEPTABLE_LOSS_RATE * 100:.2f}% and "
-            f"{MAX_ACCEPTABLE_LOSS_RATE * 100:.2f}%, but got {loss_rate * 100:.2f}%"
-        )
+        assert (
+            0.45 <= loss_rate <= 0.55
+        ), f"Expected loss rate between 45% and 55%, but got {loss_rate * 100:.2f}%"
 
     finally:
         client.stop()

@@ -1,10 +1,14 @@
 """Module for simulating real-world network conditions in socket communications."""
 
+import logging
+import logging.config
 import random
 import sched
 import socket
 from threading import Thread
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class SchedulerThread(Thread):
@@ -39,8 +43,10 @@ class RealWorldUDPSocket:
         - Bandwidth limitations
     """
 
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
         """Initialize the RealWorldSocket with a UDP socket."""
+        self.name = name
+
         self._socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         self._scheduler = sched.scheduler()
@@ -48,6 +54,7 @@ class RealWorldUDPSocket:
 
         self._packet_loss_rate: float = 0.0
         self._base_latency: float = 0.0
+        self._jitter_range: tuple[float, float] = (0.0, 0.0)
 
     def start(self) -> None:
         """Start."""
@@ -67,6 +74,35 @@ class RealWorldUDPSocket:
         """
         self._socket.connect((host, port))
 
+    def bind(self, address: tuple[str, int]) -> None:
+        """Bind the socket to a specific address.
+
+        Args:
+            address (tuple[str, int]): The address to bind to.
+        """
+        self._socket.bind(address)
+
+    def getsockname(self) -> tuple[str, int]:
+        """Get the socket's own address.
+
+        Returns:
+            tuple[str, int]: The address of the socket.
+        """
+        address = self._socket.getsockname()
+        assert isinstance(address, tuple)
+        assert len(address) == 2
+        assert isinstance(address[0], str)
+        assert isinstance(address[1], int)
+        return address
+
+    def settimeout(self, timeout: float) -> None:
+        """Set the timeout for the socket.
+
+        Args:
+            timeout (float): The timeout value in seconds.
+        """
+        self._socket.settimeout(timeout)
+
     def send(self, data: bytes) -> int:
         """Send data to the connected address.
 
@@ -77,13 +113,18 @@ class RealWorldUDPSocket:
             int: The number of bytes sent.
         """
         # Packet loss simulation
-        if not random.random() < self._packet_loss_rate:  # noqa: S311
+        if not random.random() <= self._packet_loss_rate:  # noqa: S311
+            # schedule the send action
+            logger.debug(f"{self.name}: Scheduled `send` action for {data.decode()=}.")
             self._scheduler.enter(
                 delay=self._simulate_latency(),
                 priority=1,
                 action=self._socket.send,
                 argument=(data,),
             )
+        else:
+            # packet loss did occur
+            logger.debug(f"{self.name}: Packet loss occurred for {data.decode()=}.")
         return len(data)
 
     def sendto(self, data: bytes, address: tuple[str, int]) -> int:
@@ -97,13 +138,20 @@ class RealWorldUDPSocket:
             int: The number of bytes sent.
         """
         # Packet loss simulation
-        if not random.random() < self._packet_loss_rate:  # noqa: S311
+        if not random.random() <= self._packet_loss_rate:  # noqa: S311
+            # schedule the sendto action
+            logger.debug(
+                f"{self.name}: Scheduled `sendto` action for {data.decode()=}."
+            )
             self._scheduler.enter(
                 delay=self._simulate_latency(),
                 priority=1,
                 action=self._socket.sendto,
                 argument=(data, address),
             )
+        else:
+            # packet loss did occur
+            logger.debug(f"{self.name}: Packet loss occurred for {data.decode()=}.")
 
         return len(data)
 
@@ -138,7 +186,7 @@ class RealWorldUDPSocket:
             msg = "Packet loss rate must be between 0 and 1"
             raise ValueError(msg)
 
-        self._send_packet_loss_rate = packet_loss_rate
+        self._packet_loss_rate = packet_loss_rate
 
     @property
     def base_latency(self) -> float:

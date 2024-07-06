@@ -3,6 +3,7 @@
     "acked",
     "acks",
     "DGRAM",
+    "levelname",
     "Mypy",
     "repyable"
   ]
