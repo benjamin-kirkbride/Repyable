@@ -16,15 +16,19 @@ FRAGMENT_FOOTER_FORMAT = "!BB"
 FRAGMENT_FORMAT = "!HHIBB"
 
 
-class CircularBuffer:
-    def __init__(self, size):
-        self.buffer = [None] * size
-        self.size = size
-        self.head = 0
-        self.tail = 0
-        self.count = 0
+from typing import Generic, TypeVar
 
-    def push(self, item):
+T = TypeVar("T")
+
+class CircularBuffer(Generic[T]):
+    def __init__(self, size: int):
+        self.buffer: list[T | None] = [None] * size
+        self.size: int = size
+        self.head: int = 0
+        self.tail: int = 0
+        self.count: int = 0
+
+    def push(self, item: T) -> None:
         self.buffer[self.head] = item
         self.head = (self.head + 1) % self.size
         if self.count < self.size:
@@ -32,7 +36,7 @@ class CircularBuffer:
         else:
             self.tail = (self.tail + 1) % self.size
 
-    def pop(self):
+    def pop(self) -> T | None:
         if self.count == 0:
             return None
         item = self.buffer[self.tail]
@@ -40,12 +44,12 @@ class CircularBuffer:
         self.count -= 1
         return item
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> T:
         if index >= self.count:
             raise IndexError("CircularBuffer index out of range")
-        return self.buffer[(self.tail + index) % self.size]
+        return self.buffer[(self.tail + index) % self.size]  # type: ignore
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.count
 
 
