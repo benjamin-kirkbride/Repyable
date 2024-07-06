@@ -59,6 +59,7 @@ class ReliableEndpoint:
         process_packet_callback: Callable[[bytes], bool] = lambda x: True,
     ):
         from threading import Thread
+
         self.sock = sock
         self.max_packet_size = max_packet_size
         self.fragment_above = fragment_above
@@ -129,7 +130,11 @@ class ReliableEndpoint:
         self.fragments[sequence][fragment_id] = fragment_data
 
         if all(self.fragments[sequence]):
-            complete_data = b"".join(fragment for fragment in self.fragments[sequence] if fragment is not None)
+            complete_data = b"".join(
+                fragment
+                for fragment in self.fragments[sequence]
+                if fragment is not None
+            )
             del self.fragments[sequence]
             self._process_packet(sequence, complete_data)
 
