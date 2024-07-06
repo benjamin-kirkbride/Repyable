@@ -1,8 +1,8 @@
-"""
-This module implements a reliable communication endpoint over an unreliable transport layer.
+"""This module implements a reliable communication endpoint over UDP.
 
-It provides the ReliableEndpoint class, which handles packet sequencing, acknowledgments,
-fragmentation, and reassembly over UDP.
+It provides the ReliableEndpoint class, which handles packet sequencing,
+acknowledgments, fragmentation, and reassembly over an unreliable
+transport layer.
 """
 
 import socket
@@ -297,6 +297,7 @@ if __name__ == "__main__":
             bool: True if the packet was processed successfully, False otherwise.
         """
         # Process the packet here
+        print(f"Received: {data.decode()}")
         return True
 
     endpoint = ReliableEndpoint(sock, process_packet_callback=process_packet)
@@ -308,7 +309,8 @@ if __name__ == "__main__":
             endpoint.send_packet(message.encode())
             endpoint.update()
             # Log or handle stats as needed
-            # print(endpoint.get_stats())
+            stats = endpoint.get_stats()
+            print(f"Current stats: {stats}")
     except KeyboardInterrupt:
         # Handle shutdown gracefully
         pass
