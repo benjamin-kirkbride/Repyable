@@ -37,6 +37,7 @@ ignore = [
     "S101", # Use of assert detected - I use assert for typing and testing
     "G004", # logging-f-string - I want to use fstrings for logs, I don't care about the consequences
     "COM812", # https://github.com/astral-sh/ruff/issues/6525
+    "D105", # Missing docstring in magic method
 ]
 select = ["ALL"]
 

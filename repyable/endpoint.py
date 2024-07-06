@@ -5,6 +5,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from repyable.circular_buffer import CircularBuffer
+
 # Format: sequence (2 bytes), ack (2 bytes), ack_bits (4 bytes)
 HEADER_FORMAT = "!HHI"
 
@@ -14,43 +16,6 @@ FRAGMENT_FOOTER_FORMAT = "!BB"
 # Format: sequence (2 bytes), ack (2 bytes), ack_bits (4 bytes)
 # fragment_id (1 byte), total_fragments (1 byte)
 FRAGMENT_FORMAT = "!HHIBB"
-
-
-from typing import Generic, TypeVar
-
-T = TypeVar("T")
-
-class CircularBuffer(Generic[T]):
-    def __init__(self, size: int):
-        self.buffer: list[T | None] = [None] * size
-        self.size: int = size
-        self.head: int = 0
-        self.tail: int = 0
-        self.count: int = 0
-
-    def push(self, item: T) -> None:
-        self.buffer[self.head] = item
-        self.head = (self.head + 1) % self.size
-        if self.count < self.size:
-            self.count += 1
-        else:
-            self.tail = (self.tail + 1) % self.size
-
-    def pop(self) -> T | None:
-        if self.count == 0:
-            return None
-        item = self.buffer[self.tail]
-        self.tail = (self.tail + 1) % self.size
-        self.count -= 1
-        return item
-
-    def __getitem__(self, index: int) -> T:
-        if index >= self.count:
-            raise IndexError("CircularBuffer index out of range")
-        return self.buffer[(self.tail + index) % self.size]  # type: ignore
-
-    def __len__(self) -> int:
-        return self.count
 
 
 @dataclass
@@ -68,6 +33,7 @@ class ReliableEndpoint:
         fragment_above: int = 1000,
         max_fragments: int = 16,
         fragment_size: int = 500,
+        buffer_size: int = 256,
         ack_buffer_size: int = 32,
         rtt_smoothing_factor: float = 0.1,
         packet_loss_smoothing_factor: float = 0.1,
@@ -87,8 +53,8 @@ class ReliableEndpoint:
 
         self.sequence: int = 0
         self.acks: list[int] = []
-        self.sent_packets: list[Packet] = []
-        self.received_packets: list[Packet] = []
+        self.sent_packets: CircularBuffer[Packet] = CircularBuffer(buffer_size)
+        self.received_packets: CircularBuffer[Packet] = CircularBuffer(buffer_size)
         self.fragments: dict[int, list[bytes | None]] = {}
 
         self.rtt: float = 0.0
@@ -151,9 +117,7 @@ class ReliableEndpoint:
 
     def _process_packet(self, sequence: int, data: bytes) -> None:
         if self.process_packet_callback(data):
-            self.received_packets[sequence % len(self.received_packets)] = Packet(
-                sequence, data
-            )
+            self.received_packets.push(Packet(sequence, data))
             self.acks.append(sequence)
             if len(self.acks) > self.ack_buffer_size:
                 self.acks.pop(0)
@@ -162,18 +126,17 @@ class ReliableEndpoint:
         for i in range(32):
             if ack_bits & (1 << i):
                 acked_sequence = (ack - i) % 65536
-                sent_packet = self.sent_packets[acked_sequence % len(self.sent_packets)]
-                if sent_packet and sent_packet.sequence == acked_sequence:
-                    self._update_stats(sent_packet)
+                for j in range(len(self.sent_packets)):
+                    if self.sent_packets[j].sequence == acked_sequence:
+                        self._update_rtt(self.sent_packets[j])
+                        break
 
-    def _update_stats(self, acked_packet: Packet) -> None:
+    def _update_rtt(self, acked_packet: Packet) -> None:
         current_time = time.time()
         rtt = current_time - acked_packet.send_time
         self.rtt = (
             self.rtt * (1 - self.rtt_smoothing_factor) + rtt * self.rtt_smoothing_factor
         )
-
-        # Update other stats (packet loss, bandwidth) here
 
     def send_packet(self, data: bytes) -> None:
         if len(data) > self.max_packet_size:
@@ -189,7 +152,7 @@ class ReliableEndpoint:
         packet = header + data
 
         self.sock.sendto(packet, self.sock.getpeername())
-        self.sent_packets[sequence % len(self.sent_packets)] = Packet(sequence, data)
+        self.sent_packets.push(Packet(sequence, data))
 
     def _send_fragmented(self, data: bytes) -> None:
         sequence = self._next_sequence()
@@ -207,7 +170,7 @@ class ReliableEndpoint:
             packet = header + fragment
             self.sock.sendto(packet, self.sock.getpeername())
 
-        self.sent_packets[sequence % len(self.sent_packets)] = Packet(sequence, data)
+        self.sent_packets.push(Packet(sequence, data))
 
     def _next_sequence(self) -> int:
         sequence = self.sequence
@@ -279,9 +242,6 @@ class ReliableEndpoint:
             + (acked_bytes / dt) * self.bandwidth_smoothing_factor
         )
 
-        # Clean up old packets
-        self._clean_up_old_packets(current_time)
-
     def get_stats(self) -> dict[str, float]:
         return {
             "rtt": self.rtt,
@@ -292,39 +252,39 @@ class ReliableEndpoint:
         }
 
     def _clean_up_old_packets(self, current_time: float) -> None:
-        """Remove old packets and fragments from the buffers to prevent memory buildup.
-
-        This method is called periodically to clean up packets and fragments that are
-        older than a certain timeout. The timeout is calculated as the maximum of
-        4 times the current RTT and 1 second.
-
-        Args:
-            current_time (float): The current time in seconds since the epoch.
-        """
-        # Calculate the timeout for old packets
+        """Clean up old fragments and check for very old packets."""
         timeout = max(self.rtt * 4, 1.0)  # Use at least 1 second timeout
-
-        # Clean up sent packets
-        self.sent_packets = [
-            packet
-            for packet in self.sent_packets
-            if current_time - packet.send_time < timeout
-        ]
-
-        # Clean up received packets
-        self.received_packets = [
-            packet
-            for packet in self.sent_packets
-            if current_time - packet.send_time < timeout
-        ]
 
         # Clean up fragments
         self.fragments = {
             seq: frags
             for seq, frags in self.fragments.items()
-            if current_time - self.sent_packets[seq % len(self.sent_packets)].send_time
-            < timeout
+            if current_time - self._get_packet_send_time(seq) < timeout
         }
+
+        # Check for very old packets (for diagnostics or connection health)
+        old_sent_packets = sum(
+            1
+            for packet in self.sent_packets
+            if current_time - packet.send_time > timeout
+        )
+        old_received_packets = sum(
+            1
+            for packet in self.received_packets
+            if current_time - packet.send_time > timeout
+        )
+
+        if old_sent_packets > 0 or old_received_packets > 0:
+            print(
+                f"Warning: {old_sent_packets} sent and {old_received_packets} received packets are older than {timeout} seconds"
+            )
+
+    def _get_packet_send_time(self, sequence: int) -> float:
+        """Get the send time of a packet with the given sequence number."""
+        for packet in self.sent_packets:
+            if packet.sequence == sequence:
+                return packet.send_time
+        return 0.0  # Return 0 if packet not found
 
 
 # Example usage:
