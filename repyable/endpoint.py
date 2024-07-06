@@ -298,7 +298,10 @@ if __name__ == "__main__":
         """
         # Process the packet here
         # In a real implementation, you would handle the received data
-        # For example: process_received_data(data.decode())
+        # For example:
+        # decoded_data = data.decode()
+        # process_received_data(decoded_data)
+        # log.info(f"Received: {decoded_data}")
         return True
 
     endpoint = ReliableEndpoint(sock, process_packet_callback=process_packet)
