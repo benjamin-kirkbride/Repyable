@@ -297,7 +297,8 @@ if __name__ == "__main__":
             bool: True if the packet was processed successfully, False otherwise.
         """
         # Process the packet here
-        print(f"Received: {data.decode()}")
+        # In a real implementation, you would handle the received data
+        # For example: process_received_data(data.decode())
         return True
 
     endpoint = ReliableEndpoint(sock, process_packet_callback=process_packet)
@@ -310,7 +311,8 @@ if __name__ == "__main__":
             endpoint.update()
             # Log or handle stats as needed
             stats = endpoint.get_stats()
-            print(f"Current stats: {stats}")
+            # In a real implementation, you might log these stats or update a UI
+            # For example: log_stats(stats) or update_stats_display(stats)
     except KeyboardInterrupt:
         # Handle shutdown gracefully
         pass
