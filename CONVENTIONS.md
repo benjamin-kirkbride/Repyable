@@ -1,0 +1,4 @@
+- Python code:
+  - Use Python 3.11
+  - Annotate all types using the new built-in forms when possible (e.g., use "dict" instead of "Dict" from the typing module)
+  - Ensure the code passes Mypy checks with the strict option enabled

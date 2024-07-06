@@ -3,21 +3,12 @@ requires = ["setuptools", "setuptools-scm", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "diana"
+name = "Repyable"
 version = "0.0.1"
 requires-python = ">=3.11"
 
 
-dependencies = [
-    "arcade==3.0.0.dev29",
-    "faker",
-    "extended-int",
-    "esper==3.3",
-    "networkx==3.2.1",
-    "bidict==0.23.1",
-    "loguru==0.7.2",
-    
-]
+dependencies = []
 
 [project.optional-dependencies]
 
@@ -29,14 +20,10 @@ dev = [
     "black",
     "ruff",
     "pytest-xdist",
-    "python-dotenv",
     "pytest-cov",
     "hypothesis",
     "pudb",
     "snakeviz",
-    "types-Pillow",
-    "types-networkx==3.2.1.20240618",
-    "rpyc==6.0.0",
 ]
 
 [tool.ruff]
@@ -81,9 +68,7 @@ no_implicit_reexport = true
 strict_equality = true
 extra_checks = true
 
-plugins = [
-    "numpy.typing.mypy_plugin",
-]
+
 
 [[tool.mypy.overrides]]
 module = "tests.*"
@@ -93,7 +78,7 @@ disallow_untyped_defs = false
 
 
 [tool.setuptools]
-packages = ["diana"]
+packages = ["repyable"]
 
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "benchmark_*.py"]
