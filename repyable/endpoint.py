@@ -1,3 +1,10 @@
+"""
+This module implements a reliable communication endpoint over an unreliable transport layer.
+
+It provides the ReliableEndpoint class, which handles packet sequencing, acknowledgments,
+fragmentation, and reassembly over UDP.
+"""
+
 import socket
 import struct
 import threading
@@ -38,9 +45,12 @@ class ReliableEndpoint:
         sent_packets_buffer_size (int): Size of the sent packets buffer.
         received_packets_buffer_size (int): Size of the received packets buffer.
         rtt_smoothing_factor (float): Factor for RTT calculation smoothing.
-        packet_loss_smoothing_factor (float): Factor for packet loss calculation smoothing.
-        bandwidth_smoothing_factor (float): Factor for bandwidth calculation smoothing.
-        process_packet_callback (Callable[[bytes], bool]): Callback for processing received packets.
+        packet_loss_smoothing_factor (float): Factor for packet loss calculation
+            smoothing.
+        bandwidth_smoothing_factor (float): Factor for bandwidth calculation
+            smoothing.
+        process_packet_callback (Callable[[bytes], bool]): Callback for processing
+            received packets.
     """
 
     def __init__(
@@ -56,8 +66,27 @@ class ReliableEndpoint:
         rtt_smoothing_factor: float = 0.1,
         packet_loss_smoothing_factor: float = 0.1,
         bandwidth_smoothing_factor: float = 0.1,
-        process_packet_callback: Callable[[bytes], bool] = lambda x: True,
+        process_packet_callback: Callable[[bytes], bool] = lambda _: True,
     ):
+        """Initialize the ReliableEndpoint.
+
+        Args:
+            sock (socket.socket): The underlying UDP socket.
+            max_packet_size (int): Maximum size of a single packet.
+            fragment_above (int): Size threshold above which packets are fragmented.
+            max_fragments (int): Maximum number of fragments per packet.
+            fragment_size (int): Size of each fragment.
+            ack_buffer_size (int): Size of the acknowledgment buffer.
+            sent_packets_buffer_size (int): Size of the sent packets buffer.
+            received_packets_buffer_size (int): Size of the received packets buffer.
+            rtt_smoothing_factor (float): Factor for RTT calculation smoothing.
+            packet_loss_smoothing_factor (float): Factor for packet loss calculation
+                smoothing.
+            bandwidth_smoothing_factor (float): Factor for bandwidth calculation
+                smoothing.
+            process_packet_callback (Callable[[bytes], bool]): Callback for processing
+                received packets.
+        """
         from threading import Thread
 
         self.sock = sock
@@ -92,11 +121,13 @@ class ReliableEndpoint:
         self.receive_thread: Thread | None = None
 
     def start(self) -> None:
+        """Start the receive thread."""
         self.running = True
         self.receive_thread = threading.Thread(target=self._receive_loop)
         self.receive_thread.start()
 
     def stop(self) -> None:
+        """Stop the receive thread and wait for it to finish."""
         self.running = False
         if self.receive_thread:
             self.receive_thread.join()
@@ -167,6 +198,11 @@ class ReliableEndpoint:
         # Update other stats (packet loss, bandwidth) here
 
     def send_packet(self, data: bytes) -> None:
+        """Send a packet, fragmenting it if necessary.
+
+        Args:
+            data (bytes): The data to send.
+        """
         if len(data) > self.max_packet_size:
             self._send_fragmented(data)
         else:
@@ -206,6 +242,9 @@ class ReliableEndpoint:
         self.sequence = (self.sequence + 1) % 65536
         return sequence
 
+    MAX_ACK_BITS = 32
+    SEQUENCE_MODULO = 65536
+
     def _get_ack_data(self) -> tuple[int, int]:
         if not self.acks:
             return 0, 0
@@ -213,21 +252,26 @@ class ReliableEndpoint:
         ack = self.acks[-1]
         ack_bits = 0
         for i, seq in enumerate(reversed(self.acks)):
-            if i >= 32:
+            if i >= self.MAX_ACK_BITS:
                 break
-            if (ack - seq) % 65536 < 32:
-                ack_bits |= 1 << ((ack - seq) % 32)
+            if (ack - seq) % self.SEQUENCE_MODULO < self.MAX_ACK_BITS:
+                ack_bits |= 1 << ((ack - seq) % self.MAX_ACK_BITS)
 
         return ack, ack_bits
 
     def update(self) -> None:
+        """Update the endpoint's statistics."""
         current_time = time.time()
-        dt = current_time - self.last_update_time
         self.last_update_time = current_time
 
         # Update RTT, packet loss, and bandwidth statistics here
 
     def get_stats(self) -> dict[str, float]:
+        """Get the current statistics of the endpoint.
+
+        Returns:
+            dict[str, float]: A dictionary containing various statistics.
+        """
         return {
             "rtt": self.rtt,
             "packet_loss": self.packet_loss,
@@ -244,7 +288,15 @@ if __name__ == "__main__":
     sock.connect(("localhost", 54321))
 
     def process_packet(data: bytes) -> bool:
-        print(f"Received: {data.decode()}")
+        """Process a received packet.
+
+        Args:
+            data (bytes): The received packet data.
+
+        Returns:
+            bool: True if the packet was processed successfully, False otherwise.
+        """
+        # Process the packet here
         return True
 
     endpoint = ReliableEndpoint(sock, process_packet_callback=process_packet)
@@ -255,9 +307,11 @@ if __name__ == "__main__":
             message = input("Enter message to send: ")
             endpoint.send_packet(message.encode())
             endpoint.update()
-            print(endpoint.get_stats())
+            # Log or handle stats as needed
+            # print(endpoint.get_stats())
     except KeyboardInterrupt:
-        print("Shutting down...")
+        # Handle shutdown gracefully
+        pass
     finally:
         endpoint.stop()
         sock.close()
