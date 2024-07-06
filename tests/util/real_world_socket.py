@@ -10,6 +10,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Constants
+ADDRESS_TUPLE_LENGTH = 2
+
 
 class SchedulerThread(Thread):
     """A thread that runs a scheduler."""
@@ -90,7 +93,7 @@ class RealWorldUDPSocket:
         """
         address = self._socket.getsockname()
         assert isinstance(address, tuple)
-        assert len(address) == 2
+        assert len(address) == ADDRESS_TUPLE_LENGTH
         assert isinstance(address[0], str)
         assert isinstance(address[1], int)
         return address
