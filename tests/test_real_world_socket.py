@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from tests.util.real_world_socket import RealWorldUDPSocket
 
 
@@ -40,11 +42,12 @@ def test_real_world_udp_socket_send_recv() -> None:
         server.close()
 
 
-def test_packet_loss() -> None:
+@pytest.mark.parametrize("expected_loss_rate", [i / 100 for i in range(5, 100, 5)])
+def test_packet_loss(expected_loss_rate: float) -> None:
     # Constants
-    timeout_seconds = 5
-    lower_loss_rate = 0.45
-    upper_loss_rate = 0.55
+    tolerance = 0.05  # 5% tolerance
+    lower_loss_rate = max(0, expected_loss_rate - tolerance)
+    upper_loss_rate = min(1, expected_loss_rate + tolerance)
 
     client = RealWorldUDPSocket(name="client")
     server = RealWorldUDPSocket(name="server")
@@ -57,8 +60,8 @@ def test_packet_loss() -> None:
     server.start()
 
     try:
-        # Set 50% packet loss rate
-        client.packet_loss_rate = 0.5
+        # Set the packet loss rate
+        client.packet_loss_rate = expected_loss_rate
 
         # Send 1000 packets
         test_data = b"Test Packet"
@@ -73,15 +76,15 @@ def test_packet_loss() -> None:
                 server.recv(1024)
                 received_packets += 1
             except TimeoutError:
-                break
+                continue
 
         # Calculate the actual loss rate
-        loss_rate = (num_packets - received_packets) / num_packets
+        actual_loss_rate = (num_packets - received_packets) / num_packets
 
-        # Assert that the loss rate is within 5% of 50%
+        # Assert that the loss rate is within the tolerance range
         assert (
-            lower_loss_rate <= loss_rate <= upper_loss_rate
-        ), f"Expected loss rate between {lower_loss_rate * 100}% and {upper_loss_rate * 100}%, but got {loss_rate * 100:.2f}%"
+            lower_loss_rate <= actual_loss_rate <= upper_loss_rate
+        ), f"Expected loss rate between {lower_loss_rate:.2f} and {upper_loss_rate:.2f}, but got {actual_loss_rate:.2f}"
 
     finally:
         client.stop()
