@@ -1,7 +1,5 @@
 """Tests for the RealWorldUDPSocket class."""
 
-import time
-
 import pytest
 
 from tests.util.real_world_socket import RealWorldUDPSocket
