@@ -12,10 +12,12 @@ class Packet(NamedTuple):
     Attributes:
         sequence (int): The sequence number of the packet.
         data (bytes): The payload data of the packet.
+        send_time (float): The time when the packet was sent.
     """
 
     sequence: int
     data: bytes
+    send_time: float
 
 
 class ReliableEndpoint:
@@ -56,6 +58,7 @@ class ReliableEndpoint:
         bandwidth_smoothing_factor: float = 0.1,
         process_packet_callback: Callable[[bytes], bool] = lambda x: True,
     ):
+        from threading import Thread
         self.sock = sock
         self.max_packet_size = max_packet_size
         self.fragment_above = fragment_above
@@ -75,7 +78,7 @@ class ReliableEndpoint:
         self.received_packets: list[Packet | None] = [
             None
         ] * received_packets_buffer_size
-        self.fragments: dict = {}
+        self.fragments: dict[int, list[bytes | None]] = {}
 
         self.rtt = 0.0
         self.packet_loss = 0.0
@@ -85,7 +88,7 @@ class ReliableEndpoint:
 
         self.last_update_time = time.time()
         self.running = False
-        self.receive_thread = None
+        self.receive_thread: Thread | None = None
 
     def start(self) -> None:
         self.running = True
@@ -173,7 +176,7 @@ class ReliableEndpoint:
 
         self.sock.sendto(packet, self.sock.getpeername())
         self.sent_packets[sequence % self.sent_packets_buffer_size] = Packet(
-            sequence, data
+            sequence, data, time.time()
         )
 
     def _send_fragmented(self, data: bytes) -> None:
@@ -190,7 +193,7 @@ class ReliableEndpoint:
             self.sock.sendto(packet, self.sock.getpeername())
 
         self.sent_packets[sequence % self.sent_packets_buffer_size] = Packet(
-            sequence, data
+            sequence, data, time.time()
         )
 
     def _next_sequence(self) -> int:
@@ -219,7 +222,7 @@ class ReliableEndpoint:
 
         # Update RTT, packet loss, and bandwidth statistics here
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, float]:
         return {
             "rtt": self.rtt,
             "packet_loss": self.packet_loss,
