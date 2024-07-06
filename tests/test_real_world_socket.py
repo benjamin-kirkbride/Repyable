@@ -25,7 +25,9 @@ def test_real_world_udp_socket_send_recv() -> None:
         received_data = socket2.recv(1024)
 
         # Check if the received data matches the sent data
-        assert received_data == test_data, f"Expected {test_data!r}, but received {received_data!r}"
+        assert (
+            received_data == test_data
+        ), f"Expected {test_data!r}, but received {received_data!r}"
 
     finally:
         # Stop and close the sockets
@@ -34,12 +36,13 @@ def test_real_world_udp_socket_send_recv() -> None:
         socket1.close()
         socket2.close()
 
+
 def test_packet_loss() -> None:
     socket1 = RealWorldUDPSocket()
     socket2 = RealWorldUDPSocket()
 
-    socket2._socket.bind(("localhost", 0))
-    address = socket2._socket.getsockname()
+    socket2.bind(("localhost", 0))
+    address = socket2.getsockname()
 
     socket1.start()
     socket2.start()
@@ -64,7 +67,9 @@ def test_packet_loss() -> None:
                 pass
 
         # Assert that no packets were received due to 100% packet loss
-        assert received_packets == 0, f"Expected 0 packets, but received {received_packets}"
+        assert (
+            received_packets == 0
+        ), f"Expected 0 packets, but received {received_packets}"
 
     finally:
         socket1.stop()
