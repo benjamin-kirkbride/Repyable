@@ -1,28 +1,31 @@
 """Tests for the RealWorldUDPSocket class."""
 
+import time
+
 from tests.util.real_world_socket import RealWorldUDPSocket
 
 
 def test_real_world_udp_socket_send_recv() -> None:
     # Create two sockets
-    socket1 = RealWorldUDPSocket()
-    socket2 = RealWorldUDPSocket()
+    client = RealWorldUDPSocket(name="client")
+    server = RealWorldUDPSocket(name="server")
+    server.settimeout(1)
 
     # Bind socket2 to a specific address
-    socket2.bind(("localhost", 0))
-    address = socket2.getsockname()
+    server.bind(("localhost", 0))
+    address = server.getsockname()
 
     # Start the sockets
-    socket1.start()
-    socket2.start()
+    client.start()
+    server.start()
 
     try:
         # Send data from socket1 to socket2
         test_data = b"Hello, World!"
-        socket1.sendto(test_data, address)
+        client.sendto(test_data, address)
 
         # Receive data on socket2
-        received_data = socket2.recv(1024)
+        received_data = server.recv(1024)
 
         # Check if the received data matches the sent data
         assert (
@@ -31,40 +34,41 @@ def test_real_world_udp_socket_send_recv() -> None:
 
     finally:
         # Stop and close the sockets
-        socket1.stop()
-        socket2.stop()
-        socket1.close()
-        socket2.close()
+        client.stop()
+        server.stop()
+        client.close()
+        server.close()
 
 
-def test_packet_loss() -> None:
-    socket1 = RealWorldUDPSocket()
-    socket2 = RealWorldUDPSocket()
+def test_total_packet_loss() -> None:
+    client = RealWorldUDPSocket(name="client")
+    server = RealWorldUDPSocket(name="server")
+    server.settimeout(0.1)
 
-    socket2.bind(("localhost", 0))
-    address = socket2.getsockname()
+    server.bind(("localhost", 0))
+    address = server.getsockname()
 
-    socket1.start()
-    socket2.start()
+    client.start()
+    server.start()
 
     try:
         # Set a high packet loss rate
-        socket1.packet_loss_rate = 1.0
+        client.packet_loss_rate = 1.0
 
         # Send multiple packets
         test_data = b"Test Packet"
         num_packets = 10
         for _ in range(num_packets):
-            socket1.sendto(test_data, address)
+            client.sendto(test_data, address)
 
         # Try to receive packets
         received_packets = 0
         for _ in range(num_packets):
             try:
-                socket2.recv(1024)
+                server.recv(1024)
                 received_packets += 1
             except TimeoutError:
-                pass
+                break
 
         # Assert that no packets were received due to 100% packet loss
         assert (
@@ -72,7 +76,7 @@ def test_packet_loss() -> None:
         ), f"Expected 0 packets, but received {received_packets}"
 
     finally:
-        socket1.stop()
-        socket2.stop()
-        socket1.close()
-        socket2.close()
+        client.stop()
+        server.stop()
+        client.close()
+        server.close()
