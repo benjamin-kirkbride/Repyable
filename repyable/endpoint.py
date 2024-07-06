@@ -19,6 +19,28 @@ class Packet(NamedTuple):
 
 
 class ReliableEndpoint:
+    """A reliable communication endpoint over an unreliable transport layer.
+
+    This class implements a reliable communication protocol on top of UDP,
+    handling packet sequencing, acknowledgments, fragmentation, and
+    reassembly. It also provides statistics on round-trip time (RTT),
+    packet loss, and bandwidth usage.
+
+    Attributes:
+        sock (socket.socket): The underlying UDP socket.
+        max_packet_size (int): Maximum size of a single packet.
+        fragment_above (int): Size threshold above which packets are fragmented.
+        max_fragments (int): Maximum number of fragments per packet.
+        fragment_size (int): Size of each fragment.
+        ack_buffer_size (int): Size of the acknowledgment buffer.
+        sent_packets_buffer_size (int): Size of the sent packets buffer.
+        received_packets_buffer_size (int): Size of the received packets buffer.
+        rtt_smoothing_factor (float): Factor for RTT calculation smoothing.
+        packet_loss_smoothing_factor (float): Factor for packet loss calculation smoothing.
+        bandwidth_smoothing_factor (float): Factor for bandwidth calculation smoothing.
+        process_packet_callback (Callable[[bytes], bool]): Callback for processing received packets.
+    """
+
     def __init__(
         self,
         sock: socket.socket,
