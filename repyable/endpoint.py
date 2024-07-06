@@ -188,7 +188,36 @@ class ReliableEndpoint:
         dt = current_time - self.last_update_time
         self.last_update_time = current_time
 
-        # Update RTT, packet loss, and bandwidth statistics here
+        # Update packet loss
+        acked_packets = sum(1 for packet in self.sent_packets if packet is not None and packet.send_time <= current_time - self.rtt)
+        total_packets = sum(1 for packet in self.sent_packets if packet is not None)
+        if total_packets > 0:
+            current_packet_loss = 1 - (acked_packets / total_packets)
+            self.packet_loss = (
+                self.packet_loss * (1 - self.packet_loss_smoothing_factor) +
+                current_packet_loss * self.packet_loss_smoothing_factor
+            )
+
+        # Update bandwidth statistics
+        sent_bytes = sum(len(packet.data) for packet in self.sent_packets if packet is not None and packet.send_time > current_time - dt)
+        received_bytes = sum(len(packet.data) for packet in self.received_packets if packet is not None and packet.send_time > current_time - dt)
+        acked_bytes = sum(len(packet.data) for packet in self.sent_packets if packet is not None and packet.send_time <= current_time - self.rtt and packet.send_time > current_time - dt - self.rtt)
+
+        self.sent_bandwidth = (
+            self.sent_bandwidth * (1 - self.bandwidth_smoothing_factor) +
+            (sent_bytes / dt) * self.bandwidth_smoothing_factor
+        )
+        self.received_bandwidth = (
+            self.received_bandwidth * (1 - self.bandwidth_smoothing_factor) +
+            (received_bytes / dt) * self.bandwidth_smoothing_factor
+        )
+        self.acked_bandwidth = (
+            self.acked_bandwidth * (1 - self.bandwidth_smoothing_factor) +
+            (acked_bytes / dt) * self.bandwidth_smoothing_factor
+        )
+
+        # Clean up old packets
+        self._clean_up_old_packets(current_time)
 
     def get_stats(self) -> dict[str, float]:
         return {
@@ -197,6 +226,21 @@ class ReliableEndpoint:
             "sent_bandwidth": self.sent_bandwidth,
             "received_bandwidth": self.received_bandwidth,
             "acked_bandwidth": self.acked_bandwidth,
+        }
+
+    def _clean_up_old_packets(self, current_time: float) -> None:
+        timeout = max(self.rtt * 4, 1.0)  # Use at least 1 second timeout
+        self.sent_packets = [
+            packet if packet is not None and current_time - packet.send_time < timeout else None
+            for packet in self.sent_packets
+        ]
+        self.received_packets = [
+            packet if packet is not None and current_time - packet.send_time < timeout else None
+            for packet in self.received_packets
+        ]
+        self.fragments = {
+            seq: frags for seq, frags in self.fragments.items()
+            if current_time - max(packet.send_time for packet in frags if packet is not None) < timeout
         }
 
 
