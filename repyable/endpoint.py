@@ -261,7 +261,19 @@ class ReliableEndpoint:
         }
 
     def _clean_up_old_packets(self, current_time: float) -> None:
+        """Remove old packets and fragments from the buffers to prevent memory buildup.
+
+        This method is called periodically to clean up packets and fragments that are
+        older than a certain timeout. The timeout is calculated as the maximum of
+        4 times the current RTT and 1 second.
+
+        Args:
+            current_time (float): The current time in seconds since the epoch.
+        """
+        # Calculate the timeout for old packets
         timeout = max(self.rtt * 4, 1.0)  # Use at least 1 second timeout
+
+        # Clean up sent packets
         self.sent_packets = [
             (
                 packet
@@ -270,6 +282,8 @@ class ReliableEndpoint:
             )
             for packet in self.sent_packets
         ]
+
+        # Clean up received packets
         self.received_packets = [
             (
                 packet
@@ -278,6 +292,8 @@ class ReliableEndpoint:
             )
             for packet in self.received_packets
         ]
+
+        # Clean up fragments
         self.fragments = {
             seq: frags
             for seq, frags in self.fragments.items()
