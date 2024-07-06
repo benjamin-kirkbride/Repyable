@@ -119,24 +119,13 @@ class ReliableEndpoint:
             self._process_packet(sequence, complete_data)
 
     def _process_packet(self, sequence: int, data: bytes) -> None:
-        buffer_index = sequence % len(self.received_packets)
-        existing_packet = self.received_packets[buffer_index]
-
-        if existing_packet is None or sequence > existing_packet.sequence:
-            if self.process_packet_callback(data):
-                self.received_packets[buffer_index] = Packet(sequence, data)
-                self.acks.append(sequence)
-                if len(self.acks) > self.ack_buffer_size:
-                    self.acks.pop(0)
-
-                # Process any buffered packets that are now in order
-                next_expected = (sequence + 1) % 65536
-                while True:
-                    next_packet = self.received_packets[next_expected % len(self.received_packets)]
-                    if next_packet is None or next_packet.sequence != next_expected:
-                        break
-                    self.process_packet_callback(next_packet.data)
-                    next_expected = (next_expected + 1) % 65536
+        if self.process_packet_callback(data):
+            self.received_packets[sequence % len(self.received_packets)] = Packet(
+                sequence, data
+            )
+            self.acks.append(sequence)
+            if len(self.acks) > self.ack_buffer_size:
+                self.acks.pop(0)
 
     def _process_acks(self, ack: int, ack_bits: int) -> None:
         for i in range(32):
