@@ -16,6 +16,39 @@ FRAGMENT_FOOTER_FORMAT = "!BB"
 FRAGMENT_FORMAT = "!HHIBB"
 
 
+class CircularBuffer:
+    def __init__(self, size):
+        self.buffer = [None] * size
+        self.size = size
+        self.head = 0
+        self.tail = 0
+        self.count = 0
+
+    def push(self, item):
+        self.buffer[self.head] = item
+        self.head = (self.head + 1) % self.size
+        if self.count < self.size:
+            self.count += 1
+        else:
+            self.tail = (self.tail + 1) % self.size
+
+    def pop(self):
+        if self.count == 0:
+            return None
+        item = self.buffer[self.tail]
+        self.tail = (self.tail + 1) % self.size
+        self.count -= 1
+        return item
+
+    def __getitem__(self, index):
+        if index >= self.count:
+            raise IndexError("CircularBuffer index out of range")
+        return self.buffer[(self.tail + index) % self.size]
+
+    def __len__(self):
+        return self.count
+
+
 @dataclass
 class Packet:
     sequence: int
@@ -32,8 +65,6 @@ class ReliableEndpoint:
         max_fragments: int = 16,
         fragment_size: int = 500,
         ack_buffer_size: int = 32,
-        sent_packets_buffer_size: int = 256,
-        received_packets_buffer_size: int = 256,
         rtt_smoothing_factor: float = 0.1,
         packet_loss_smoothing_factor: float = 0.1,
         bandwidth_smoothing_factor: float = 0.1,
@@ -45,8 +76,6 @@ class ReliableEndpoint:
         self.max_fragments = max_fragments
         self.fragment_size = fragment_size
         self.ack_buffer_size = ack_buffer_size
-        self.sent_packets_buffer_size = sent_packets_buffer_size
-        self.received_packets_buffer_size = received_packets_buffer_size
         self.rtt_smoothing_factor = rtt_smoothing_factor
         self.packet_loss_smoothing_factor = packet_loss_smoothing_factor
         self.bandwidth_smoothing_factor = bandwidth_smoothing_factor
@@ -54,10 +83,8 @@ class ReliableEndpoint:
 
         self.sequence: int = 0
         self.acks: list[int] = []
-        self.sent_packets: list[Packet | None] = [None] * sent_packets_buffer_size
-        self.received_packets: list[Packet | None] = [
-            None
-        ] * received_packets_buffer_size
+        self.sent_packets: list[Packet] = []
+        self.received_packets: list[Packet] = []
         self.fragments: dict[int, list[bytes | None]] = {}
 
         self.rtt: float = 0.0
@@ -275,22 +302,16 @@ class ReliableEndpoint:
 
         # Clean up sent packets
         self.sent_packets = [
-            (
-                packet
-                if packet is not None and current_time - packet.send_time < timeout
-                else None
-            )
+            packet
             for packet in self.sent_packets
+            if current_time - packet.send_time < timeout
         ]
 
         # Clean up received packets
         self.received_packets = [
-            (
-                packet
-                if packet is not None and current_time - packet.send_time < timeout
-                else None
-            )
-            for packet in self.received_packets
+            packet
+            for packet in self.sent_packets
+            if current_time - packet.send_time < timeout
         ]
 
         # Clean up fragments
@@ -319,7 +340,6 @@ if __name__ == "__main__":
         while True:
             message = input("Enter message to send: ")
             endpoint.send_packet(message.encode())
-            endpoint._update()
             print(endpoint.get_stats())
     except KeyboardInterrupt:
         print("Shutting down...")
