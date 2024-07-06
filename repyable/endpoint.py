@@ -297,7 +297,8 @@ class ReliableEndpoint:
         self.fragments = {
             seq: frags
             for seq, frags in self.fragments.items()
-            if current_time - self.sent_packets[seq % len(self.sent_packets)].send_time < timeout
+            if current_time - self.sent_packets[seq % len(self.sent_packets)].send_time
+            < timeout
         }
 
 
