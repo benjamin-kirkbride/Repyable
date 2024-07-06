@@ -129,14 +129,14 @@ class ReliableEndpoint:
         self.fragments[sequence][fragment_id] = fragment_data
 
         if all(self.fragments[sequence]):
-            complete_data = b"".join(self.fragments[sequence])
+            complete_data = b"".join(fragment for fragment in self.fragments[sequence] if fragment is not None)
             del self.fragments[sequence]
             self._process_packet(sequence, complete_data)
 
     def _process_packet(self, sequence: int, data: bytes) -> None:
         if self.process_packet_callback(data):
             self.received_packets[sequence % self.received_packets_buffer_size] = (
-                Packet(sequence, data)
+                Packet(sequence, data, time.time())
             )
             self.acks.append(sequence)
             if len(self.acks) > self.ack_buffer_size:
