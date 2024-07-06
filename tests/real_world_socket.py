@@ -1,3 +1,5 @@
+"""Module for simulating real-world network conditions in socket communications."""
+
 import socket
 
 
