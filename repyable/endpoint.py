@@ -5,6 +5,16 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+# Format: sequence (2 bytes), ack (2 bytes), ack_bits (4 bytes)
+HEADER_FORMAT = "!HHI"
+
+# Format: fragment_id (1 byte), total_fragments (1 byte)
+FRAGMENT_FOOTER_FORMAT = "!BB"
+
+# Format: sequence (2 bytes), ack (2 bytes), ack_bits (4 bytes)
+# fragment_id (1 byte), total_fragments (1 byte)
+FRAGMENT_FORMAT = "!HHIBB"
+
 
 @dataclass
 class Packet:
@@ -72,6 +82,7 @@ class ReliableEndpoint:
 
     def _receive_loop(self) -> None:
         while self.running:
+            self._update()
             try:
                 data, addr = self.sock.recvfrom(self.max_packet_size)
                 self._process_received_data(data)
@@ -79,7 +90,7 @@ class ReliableEndpoint:
                 pass
 
     def _process_received_data(self, data: bytes) -> None:
-        sequence, ack, ack_bits = struct.unpack("!HHI", data[:8])
+        sequence, ack, ack_bits = struct.unpack(HEADER_FORMAT, data[:8])
         payload = data[8:]
 
         if len(payload) > self.fragment_above:
@@ -90,7 +101,7 @@ class ReliableEndpoint:
         self._process_acks(ack, ack_bits)
 
     def _process_fragment(self, sequence: int, data: bytes) -> None:
-        fragment_id, total_fragments = struct.unpack("!BB", data[:2])
+        fragment_id, total_fragments = struct.unpack(FRAGMENT_FOOTER_FORMAT, data[:2])
         fragment_data = data[2:]
 
         if sequence not in self.fragments:
@@ -143,7 +154,7 @@ class ReliableEndpoint:
         sequence = self._next_sequence()
         ack, ack_bits = self._get_ack_data()
 
-        header = struct.pack("!HHI", sequence, ack, ack_bits)
+        header = struct.pack(HEADER_FORMAT, sequence, ack, ack_bits)
         packet = header + data
 
         self.sock.sendto(packet, self.sock.getpeername())
@@ -158,7 +169,10 @@ class ReliableEndpoint:
 
         for i, fragment in enumerate(fragments):
             ack, ack_bits = self._get_ack_data()
-            header = struct.pack("!HHIBB", sequence, ack, ack_bits, i, len(fragments))
+
+            header = struct.pack(
+                FRAGMENT_FORMAT, sequence, ack, ack_bits, i, len(fragments)
+            )
             packet = header + fragment
             self.sock.sendto(packet, self.sock.getpeername())
 
@@ -183,37 +197,55 @@ class ReliableEndpoint:
 
         return ack, ack_bits
 
-    def update(self) -> None:
+    def _update(self) -> None:
         current_time = time.time()
         dt = current_time - self.last_update_time
         self.last_update_time = current_time
 
         # Update packet loss
-        acked_packets = sum(1 for packet in self.sent_packets if packet is not None and packet.send_time <= current_time - self.rtt)
+        acked_packets = sum(
+            1
+            for packet in self.sent_packets
+            if packet is not None and packet.send_time <= current_time - self.rtt
+        )
         total_packets = sum(1 for packet in self.sent_packets if packet is not None)
         if total_packets > 0:
             current_packet_loss = 1 - (acked_packets / total_packets)
             self.packet_loss = (
-                self.packet_loss * (1 - self.packet_loss_smoothing_factor) +
-                current_packet_loss * self.packet_loss_smoothing_factor
+                self.packet_loss * (1 - self.packet_loss_smoothing_factor)
+                + current_packet_loss * self.packet_loss_smoothing_factor
             )
 
         # Update bandwidth statistics
-        sent_bytes = sum(len(packet.data) for packet in self.sent_packets if packet is not None and packet.send_time > current_time - dt)
-        received_bytes = sum(len(packet.data) for packet in self.received_packets if packet is not None and packet.send_time > current_time - dt)
-        acked_bytes = sum(len(packet.data) for packet in self.sent_packets if packet is not None and packet.send_time <= current_time - self.rtt and packet.send_time > current_time - dt - self.rtt)
+        sent_bytes = sum(
+            len(packet.data)
+            for packet in self.sent_packets
+            if packet is not None and packet.send_time > current_time - dt
+        )
+        received_bytes = sum(
+            len(packet.data)
+            for packet in self.received_packets
+            if packet is not None and packet.send_time > current_time - dt
+        )
+        acked_bytes = sum(
+            len(packet.data)
+            for packet in self.sent_packets
+            if packet is not None
+            and packet.send_time <= current_time - self.rtt
+            and packet.send_time > current_time - dt - self.rtt
+        )
 
         self.sent_bandwidth = (
-            self.sent_bandwidth * (1 - self.bandwidth_smoothing_factor) +
-            (sent_bytes / dt) * self.bandwidth_smoothing_factor
+            self.sent_bandwidth * (1 - self.bandwidth_smoothing_factor)
+            + (sent_bytes / dt) * self.bandwidth_smoothing_factor
         )
         self.received_bandwidth = (
-            self.received_bandwidth * (1 - self.bandwidth_smoothing_factor) +
-            (received_bytes / dt) * self.bandwidth_smoothing_factor
+            self.received_bandwidth * (1 - self.bandwidth_smoothing_factor)
+            + (received_bytes / dt) * self.bandwidth_smoothing_factor
         )
         self.acked_bandwidth = (
-            self.acked_bandwidth * (1 - self.bandwidth_smoothing_factor) +
-            (acked_bytes / dt) * self.bandwidth_smoothing_factor
+            self.acked_bandwidth * (1 - self.bandwidth_smoothing_factor)
+            + (acked_bytes / dt) * self.bandwidth_smoothing_factor
         )
 
         # Clean up old packets
@@ -231,16 +263,27 @@ class ReliableEndpoint:
     def _clean_up_old_packets(self, current_time: float) -> None:
         timeout = max(self.rtt * 4, 1.0)  # Use at least 1 second timeout
         self.sent_packets = [
-            packet if packet is not None and current_time - packet.send_time < timeout else None
+            (
+                packet
+                if packet is not None and current_time - packet.send_time < timeout
+                else None
+            )
             for packet in self.sent_packets
         ]
         self.received_packets = [
-            packet if packet is not None and current_time - packet.send_time < timeout else None
+            (
+                packet
+                if packet is not None and current_time - packet.send_time < timeout
+                else None
+            )
             for packet in self.received_packets
         ]
         self.fragments = {
-            seq: frags for seq, frags in self.fragments.items()
-            if current_time - max(packet.send_time for packet in frags if packet is not None) < timeout
+            seq: frags
+            for seq, frags in self.fragments.items()
+            if current_time
+            - max(packet.send_time for packet in frags if packet is not None)
+            < timeout
         }
 
 
@@ -261,7 +304,7 @@ if __name__ == "__main__":
         while True:
             message = input("Enter message to send: ")
             endpoint.send_packet(message.encode())
-            endpoint.update()
+            endpoint._update()
             print(endpoint.get_stats())
     except KeyboardInterrupt:
         print("Shutting down...")
