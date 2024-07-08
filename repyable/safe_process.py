@@ -54,8 +54,6 @@ class SafeProcess(mp.Process):
 
     def run(self) -> None:
         """Run the process."""
-        logger.critical("Process started.")
-        logger.info("Process started.")
         try:
             result = self._target() if self._target is not None else self.user_target()
 

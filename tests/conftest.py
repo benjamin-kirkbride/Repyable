@@ -13,7 +13,12 @@ def _setup_logging(pytestconfig):
     Special attention to making sure that multiprocessing logging works. For both
     reporting and caplog.
 
-    See: https://github.com/Delgan/loguru/issues/573
+    See:
+    - https://github.com/Delgan/loguru/issues/573
+    - https://stackoverflow.com/a/36807327/1342874
+    - https://github.com/pytest-dev/pytest/blob/b9663fed6f9e19fe0c4ccbfbd4a79c35206aaaf8/src/_pytest/logging.py#L550-L552
+    - https://github.com/pytest-dev/pytest/issues/3037
+
     """
     logging_plugin = pytestconfig.pluginmanager.getplugin("logging-plugin")
 
