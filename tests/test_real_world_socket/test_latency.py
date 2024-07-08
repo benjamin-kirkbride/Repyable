@@ -23,8 +23,8 @@ def test_jitter(base_latency: float, jitter_range: tuple[float, float]) -> None:
     server.bind(("localhost", 0))
     address = server.getsockname()
 
-    client.start()
-    server.start()
+    client.start_scheduler()
+    server.start_scheduler()
 
     # Set the base latency and jitter range
     client.base_latency = base_latency
@@ -62,7 +62,7 @@ def test_jitter(base_latency: float, jitter_range: tuple[float, float]) -> None:
         )
 
     finally:
-        client.stop()
-        server.stop()
+        client.stop_scheduler()
+        server.stop_scheduler()
         client.close()
         server.close()

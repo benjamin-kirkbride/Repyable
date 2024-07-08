@@ -2,9 +2,15 @@
   "cSpell.words": [
     "acked",
     "acks",
+    "autouse",
+    "caplog",
     "DGRAM",
+    "getplugin",
     "levelname",
     "Mypy",
+    "pluginmanager",
+    "pytest",
+    "pytestconfig",
     "repyable"
   ]
 }

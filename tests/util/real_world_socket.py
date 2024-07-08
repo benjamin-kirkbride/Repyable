@@ -2,33 +2,76 @@
 
 import logging
 import logging.config
+import multiprocessing as mp
 import random
 import sched
 import socket
-from threading import Thread
-from typing import Any
+from typing import Any, TypedDict
 
-logger = logging.getLogger(__name__)
+from repyable.safe_process import SafeProcess
 
 
-class SchedulerThread(Thread):
-    """A thread that runs a scheduler."""
+class EnterArgs(TypedDict):
+    """Type definition for the arguments of the `enter` method of sched.scheduler."""
+
+    delay: float
+    priority: int
+    action: Any
+    argument: tuple[Any, ...]
+    kwargs: dict[str, Any]
+
+
+class SchedulerProcess(SafeProcess):
+    """A process that runs a scheduler."""
+
+    use_stop_event = True
 
     def __init__(
         self,
         *args: Any,
-        scheduler: sched.scheduler | None = None,
         **kwargs: Any,
     ) -> None:
-        """Initializes a SchedulerThread object."""
+        """Initializes a SchedulerProcess object."""
         super().__init__(*args, **kwargs)
-        self.scheduler = scheduler if scheduler is not None else sched.scheduler()
-        self.running = True
+        self.scheduler = sched.scheduler()
 
-    def run(self) -> None:
+        self.queue: mp.Queue[EnterArgs] = mp.Queue()
+
+    def user_target(self) -> None:
         """Runs the scheduler."""
-        while self.running:
-            self.scheduler.run(blocking=True)
+        assert self._stop_event is not None
+        while not self._stop_event.is_set():
+            while not self.queue.empty():
+                enter_args = self.queue.get()
+                self.scheduler.enter(**enter_args)
+
+            self.scheduler.run(blocking=False)
+
+    def enter(  # noqa: PLR0913
+        self,
+        delay: float,
+        priority: int,
+        action: Any,
+        argument: tuple[Any, ...] = (),
+        kwargs: dict[str, Any] = {},  # noqa: B006
+    ) -> None:
+        """Schedule an action to be executed by the scheduler.
+
+        Args:
+            delay (float): The time in seconds to wait before executing the action.
+            priority (int): The priority of the action.
+            action (Any): The action to be executed.
+            argument (tuple): The arguments to be passed to the action.
+            kwargs (dict): The keyword arguments to be passed to the action.
+        """
+        enter_args = EnterArgs(
+            delay=delay,
+            priority=priority,
+            action=action,
+            argument=argument,
+            kwargs=kwargs,
+        )
+        self.queue.put(enter_args)
 
 
 class RealWorldUDPSocket:
@@ -49,21 +92,29 @@ class RealWorldUDPSocket:
 
         self._socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-        self._scheduler = sched.scheduler()
-        self._scheduler_thread = SchedulerThread(scheduler=self._scheduler)
+        self._scheduler_process = SchedulerProcess()
 
         self._packet_loss_rate: float = 0.0
         self._base_latency: float = 0.0
         self._jitter_range: tuple[float, float] = (0.0, 0.0)
 
-    def start(self) -> None:
+    def start_scheduler(self) -> None:
         """Start."""
-        self._scheduler_thread.start()
+        self._scheduler_process.start()
 
-    def stop(self) -> None:
+    def stop_scheduler(self) -> None:
         """Stop."""
-        self._scheduler_thread.running = False
-        self._scheduler_thread.join()
+        self._socket.close()
+        self._scheduler_process.stop()
+        self._scheduler_process.join()
+
+    def join_scheduler(self, timeout: float | None = None) -> None:
+        """Join."""
+        self._scheduler_process.join(timeout=timeout)
+
+    def scheduler_is_alive(self) -> bool:
+        """Check if the scheduler is alive."""
+        return self._scheduler_process.is_alive()
 
     def connect(self, host: str, port: int) -> None:
         """Connect the socket to a remote address.
@@ -116,7 +167,7 @@ class RealWorldUDPSocket:
         if not random.random() <= self._packet_loss_rate:  # noqa: S311
             # schedule the send action
             logger.debug(f"{self.name}: Scheduled `send` action for {data.decode()=}.")
-            self._scheduler.enter(
+            self._scheduler_process.enter(
                 delay=self._simulate_latency(),
                 priority=1,
                 action=self._socket.send,
@@ -143,7 +194,7 @@ class RealWorldUDPSocket:
             logger.debug(
                 f"{self.name}: Scheduled `sendto` action for {data.decode()=}."
             )
-            self._scheduler.enter(
+            self._scheduler_process.enter(
                 delay=self._simulate_latency(),
                 priority=1,
                 action=self._socket.sendto,
@@ -164,7 +215,9 @@ class RealWorldUDPSocket:
         Returns:
             bytes: The received data.
         """
-        return self._socket.recv(buffer_size)
+        received = self._socket.recv(buffer_size)
+        logger.critical(f"{self.name}: Received {received.decode()=}.")
+        return received
 
     def close(self) -> None:
         """Close the socket."""

@@ -79,7 +79,7 @@ disallow_untyped_defs = false
 
 
 [tool.setuptools]
-packages = ["repyable"]
+packages = ["repyable", "tests"]
 
 [tool.pytest.ini_options]
 python_files = ["test_*.py", "benchmark_*.py"]
