@@ -1,17 +1,22 @@
 """Module for simulating real-world network conditions in socket communications."""
 
+import contextlib
 import logging
 import logging.config
 import multiprocessing as mp
 import random
 import sched
 import socket
-from typing import Any, TypedDict
+import time
+from collections.abc import Generator
+from typing import Any, Literal, NamedTuple, TypedDict
 
 from repyable.safe_process import SafeProcess
 
+logger = logging.getLogger(__name__)
 
-class EnterArgs(TypedDict):
+
+class SchedulerEnterArgs(TypedDict):
     """Type definition for the arguments of the `enter` method of sched.scheduler."""
 
     delay: float
@@ -21,7 +26,17 @@ class EnterArgs(TypedDict):
     kwargs: dict[str, Any]
 
 
-class SchedulerProcess(SafeProcess):
+class ScheduledSenderProcessEnterArgs(TypedDict):
+    """Type definition for the arguments of the `enter` method of sched.scheduler."""
+
+    delay: float
+    priority: int
+    action: Literal["send", "sendto"]
+    argument: tuple[Any, ...]
+    kwargs: dict[str, Any]
+
+
+class ScheduledSenderProcess(SafeProcess):
     """A process that runs a scheduler."""
 
     use_stop_event = True
@@ -29,13 +44,15 @@ class SchedulerProcess(SafeProcess):
     def __init__(
         self,
         *args: Any,
+        socket: socket.socket,
         **kwargs: Any,
     ) -> None:
         """Initializes a SchedulerProcess object."""
         super().__init__(*args, **kwargs)
+        self._socket = socket
         self.scheduler = sched.scheduler()
 
-        self.queue: mp.Queue[EnterArgs] = mp.Queue()
+        self.queue: mp.Queue[SchedulerEnterArgs] = mp.Queue()
 
     def user_target(self) -> None:
         """Runs the scheduler."""
@@ -43,7 +60,23 @@ class SchedulerProcess(SafeProcess):
         while not self._stop_event.is_set():
             while not self.queue.empty():
                 enter_args = self.queue.get()
-                self.scheduler.enter(**enter_args)
+
+                if enter_args["action"] == "send":
+                    action: Any = self._socket.send
+                elif enter_args["action"] == "sendto":
+                    action = self._socket.sendto
+                else:
+                    msg = f"Invalid action: {enter_args['action']}"
+                    raise ValueError(msg)
+
+                new_enter_args = SchedulerEnterArgs(
+                    delay=enter_args["delay"],
+                    priority=enter_args["priority"],
+                    action=action,
+                    argument=enter_args["argument"],
+                    kwargs=enter_args["kwargs"],
+                )
+                self.scheduler.enter(**new_enter_args)
 
             self.scheduler.run(blocking=False)
 
@@ -64,7 +97,7 @@ class SchedulerProcess(SafeProcess):
             argument (tuple): The arguments to be passed to the action.
             kwargs (dict): The keyword arguments to be passed to the action.
         """
-        enter_args = EnterArgs(
+        enter_args = SchedulerEnterArgs(
             delay=delay,
             priority=priority,
             action=action,
@@ -92,11 +125,11 @@ class RealWorldUDPSocket:
 
         self._socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-        self._scheduler_process = SchedulerProcess()
+        self._scheduler_process = ScheduledSenderProcess(socket=self._socket)
 
         self._packet_loss_rate: float = 0.0
         self._base_latency: float = 0.0
-        self._jitter_range: tuple[float, float] = (0.0, 0.0)
+        self._jitter: float = 0.0
 
     def start_scheduler(self) -> None:
         """Start."""
@@ -104,7 +137,6 @@ class RealWorldUDPSocket:
 
     def stop_scheduler(self) -> None:
         """Stop."""
-        self._socket.close()
         self._scheduler_process.stop()
         self._scheduler_process.join()
 
@@ -141,7 +173,7 @@ class RealWorldUDPSocket:
         """
         address = self._socket.getsockname()
         assert isinstance(address, tuple)
-        assert len(address) == 2
+        assert len(address) == 2  # noqa: PLR2004
         assert isinstance(address[0], str)
         assert isinstance(address[1], int)
         return address
@@ -170,7 +202,7 @@ class RealWorldUDPSocket:
             self._scheduler_process.enter(
                 delay=self._simulate_latency(),
                 priority=1,
-                action=self._socket.send,
+                action="send",
                 argument=(data,),
             )
         else:
@@ -197,7 +229,7 @@ class RealWorldUDPSocket:
             self._scheduler_process.enter(
                 delay=self._simulate_latency(),
                 priority=1,
-                action=self._socket.sendto,
+                action="sendto",
                 argument=(data, address),
             )
         else:
@@ -216,8 +248,21 @@ class RealWorldUDPSocket:
             bytes: The received data.
         """
         received = self._socket.recv(buffer_size)
-        logger.critical(f"{self.name}: Received {received.decode()=}.")
+        logger.debug(f"{self.name}: Received `{received.decode()=}`.")
         return received
+
+    def recvfrom(self, buffer_size: int) -> tuple[bytes, tuple[str, int]]:
+        """Receive data from the socket.
+
+        Args:
+            buffer_size (int): The maximum amount of data to be received at once.
+
+        Returns:
+            tuple[bytes, tuple[str, int]]: The received data and the sender's address.
+        """
+        received, address = self._socket.recvfrom(buffer_size)
+        logger.debug(f"{self.name}: Received `{received.decode()=}` from {address=}.")
+        return received, address
 
     def close(self) -> None:
         """Close the socket."""
@@ -225,7 +270,7 @@ class RealWorldUDPSocket:
 
     def _simulate_latency(self) -> float:
         """Simulate latency by delaying the data."""
-        jitter = random.uniform(*self._jitter_range)  # noqa: S311
+        jitter = random.random() * self._jitter  # noqa: S311
         return self._base_latency + jitter
 
     @property
@@ -255,20 +300,119 @@ class RealWorldUDPSocket:
         self._base_latency = latency
 
     @property
-    def jitter_range(self) -> tuple[float, float]:
+    def jitter(self) -> float:
         """Get the jitter range for the socket."""
-        return self._jitter_range
+        return self._jitter
 
-    @jitter_range.setter
-    def jitter_range(self, jitter_range: tuple[float, float]) -> None:
-        if (
-            len(jitter_range) != 2  # noqa: PLR2004
-            or jitter_range[0] > jitter_range[1]
-            or jitter_range[0] < 0
-        ):
-            msg = (
-                "Jitter range must be a tuple of two non-negative numbers"
-                " ,with the first less than or equal to the second."
-            )
+    @jitter.setter
+    def jitter(self, value: float) -> None:
+        if not isinstance(value, float):
+            msg = "Jitter must be a float"
+            raise TypeError(msg)
+
+        if value < 0:
+            msg = "Jitter must be a non-negative number"
             raise ValueError(msg)
-        self._jitter_range = jitter_range
+        self._jitter = value
+
+
+@contextlib.contextmanager
+def get_multiple_real_world_sockets(
+    *names: str,
+    start_scheduler: bool = True,
+    bind: bool = False,
+) -> Generator[dict[str, RealWorldUDPSocket], None, None]:
+    """Get multiple RealWorldUDPSocket instances."""
+    sockets = {name: RealWorldUDPSocket(name=name) for name in names}
+    for rws in sockets.values():
+        if start_scheduler:
+            rws.start_scheduler()
+        if bind:
+            rws.bind(("localhost", 0))
+    try:
+        yield sockets
+    finally:
+        for rws in sockets.values():
+            rws.close()
+            if rws.scheduler_is_alive():
+                rws.stop_scheduler()
+
+        for rws in sockets.values():
+            rws.join_scheduler(timeout=1)
+            assert not rws.scheduler_is_alive()
+
+
+class PacketWithTime(NamedTuple):
+    """A packet with the time it was sent and received."""
+
+    source: tuple[str, int]
+    number: int
+    sent_time: float
+    received_time: float
+    payload: str
+
+    def latency(self) -> float:
+        """Calculate the latency of the packet."""
+        return self.received_time - self.sent_time
+
+
+RawPacket = tuple[float, tuple[str, int], bytes]
+
+
+def _process_packets(raw_packets: list[RawPacket]) -> list[PacketWithTime]:
+    """Process packets received by the server."""
+    packets = []
+    for raw_packet in raw_packets:
+        received_time, source, raw_data = raw_packet
+        data = raw_data.decode()
+        assert data.startswith("[[")
+        assert data.endswith("]]")
+        assert data.count(":") == 2  # noqa: PLR2004
+
+        packet_number, packet_time, payload = data[2:-2].split(":")
+        packet = PacketWithTime(
+            source=source,
+            number=int(packet_number),
+            sent_time=float(packet_time),
+            received_time=received_time,
+            payload=payload,
+        )
+        packets.append(packet)
+    return packets
+
+
+class ReceiveProcess(SafeProcess):
+    """Receives packets from a socket and measures the time it takes for each."""
+
+    use_stop_event = True
+
+    def __init__(
+        self,
+        *args: Any,
+        sock: socket.socket | RealWorldUDPSocket,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initializes a ReceiveProcess object."""
+        super().__init__(*args, **kwargs)
+
+        self.socket = sock
+        if timeout is not None:
+            self.socket.settimeout(timeout)
+
+    def user_target(self) -> list[PacketWithTime]:
+        """Receive packets from a socket and measure the time it takes for each."""
+        packets = []
+
+        assert self._stop_event is not None
+        while not self._stop_event.is_set():
+            try:
+                raw_data, address = self.socket.recvfrom(1024)
+                current_time = time.monotonic()
+
+                packets.append((current_time, address, raw_data))
+
+            except TimeoutError:
+                break
+
+        return _process_packets(packets)

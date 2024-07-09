@@ -56,13 +56,16 @@ class SafeProcess(mp.Process):
         """Run the process."""
         try:
             result = self._target() if self._target is not None else self.user_target()
-
             self._set_result(result)
         except Exception as e:
             logger.exception("An error occurred in the process.")
             tb = traceback.format_exc()
             self._child_exception_conn.send((e, tb))
             raise
+        finally:
+            self._child_exception_conn.close()
+            self._child_result_conn.close()
+            logger.info(f"Process {self.name} finished.")
 
     def user_target(self) -> Any:
         """The user-defined run method."""

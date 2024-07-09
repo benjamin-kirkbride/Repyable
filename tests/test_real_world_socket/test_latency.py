@@ -1,68 +1,79 @@
 """Tests for jitter in the RealWorldUDPSocket class."""
 
+import math
 import time
 from statistics import mean, stdev
 
 import pytest
 
-from tests.util.real_world_socket import RealWorldUDPSocket
+from tests.util.real_world_socket import (
+    PacketWithTime,
+    ReceiveProcess,
+    get_multiple_real_world_sockets,
+)
 
 
+# TODO: testing latency does not require serial execution of packet sending
+# this could be much faster if we send all packets at once and then receive them
 @pytest.mark.parametrize(
-    "base_latency, jitter_range",
+    ("num_packets", "base_latency", "jitter"),
     [
-        (0.1, (0.05, 0.15)),
-        (0.2, (0.1, 0.3)),
+        (1000, 0.050, 0.010),
+        (200, 0.100, 0.150),
+        (100, 0.200, 0.300),
+        (50, 0.500, 0.250),
     ],
 )
-def test_jitter(base_latency: float, jitter_range: tuple[float, float]) -> None:
-    client = RealWorldUDPSocket(name="client")
-    server = RealWorldUDPSocket(name="server")
-    server.settimeout(1)
+def test_jitter(num_packets: int, base_latency: float, jitter: float) -> None:
+    with get_multiple_real_world_sockets("client", "server") as rws_dict:
+        # give 50ms of extra time for the packets to be processed
+        safe_max_latency = (base_latency + jitter) + 0.050
 
-    server.bind(("localhost", 0))
-    address = server.getsockname()
+        client, server = rws_dict["client"], rws_dict["server"]
+        server.settimeout(1)
 
-    client.start_scheduler()
-    server.start_scheduler()
+        server.bind(("localhost", 0))
+        address = server.getsockname()
 
-    # Set the base latency and jitter range
-    client.base_latency = base_latency
-    client.jitter_range = jitter_range
+        # Set the base latency and jitter range
+        client.base_latency = base_latency
+        client.jitter = jitter
 
-    try:
-        # Send multiple packets and measure the time it takes for each
-        test_data = b"Test Packet"
-        num_packets = 100
-        latencies = []
+        server_receiver_process = ReceiveProcess(sock=server, timeout=safe_max_latency)
+        server_receiver_process.start()
+        # time.sleep(0.1)  # let the server start
 
-        for _ in range(num_packets):
-            start_time = time.time()
-            client.sendto(test_data, address)
-            server.recv(1024)
-            end_time = time.time()
-            latencies.append(end_time - start_time)
+        for i in range(num_packets):
+            data = f"[[{i}:{time.monotonic()}:Hello World!]]".encode()
+            client.sendto(data, address)
+
+        # give time for client to send scheduled packets
+        time.sleep(safe_max_latency + 0.1)
+        if server_receiver_process.is_alive():
+            server_receiver_process.stop()
+        # time for the server to timeout on socket.recv
+        server_receiver_process.join(timeout=safe_max_latency)
+        assert not server_receiver_process.is_alive()
+        packets: list[PacketWithTime] = server_receiver_process.result
+
+        packet_numbers = {packet.number for packet in packets}
+        assert len(packet_numbers) == num_packets
+
+        for packet in packets:
+            # this is generous but still useful
+            assert packet.latency() < safe_max_latency
 
         # Calculate statistics
-        avg_latency = mean(latencies)
-        latency_stdev = stdev(latencies)
+        latencies = [packet.latency() for packet in packets]
 
         # Check if the average latency is within the expected range
-        expected_avg = base_latency + (jitter_range[0] + jitter_range[1]) / 2
-        assert abs(avg_latency - expected_avg) < 0.05, (
-            f"Expected average latency around {expected_avg:.3f}, "
-            f"but got {avg_latency:.3f}"
-        )
+        avg_tolerance = 5 / 100
+        avg_latency = mean(latencies)
+        expected_avg = (jitter / 2) + base_latency
+        assert math.isclose(avg_latency, expected_avg, rel_tol=avg_tolerance)
 
         # Check if the standard deviation is reasonable
-        expected_stdev = (jitter_range[1] - jitter_range[0]) / 4  # Approximate
-        assert abs(latency_stdev - expected_stdev) < 0.05, (
-            f"Expected latency standard deviation around {expected_stdev:.3f}, "
-            f"but got {latency_stdev:.3f}"
-        )
-
-    finally:
-        client.stop_scheduler()
-        server.stop_scheduler()
-        client.close()
-        server.close()
+        stdev_tolerance = 10 / 100
+        latency_stdev = stdev(latencies)
+        expected_stdev = jitter * (1 / math.sqrt(12))
+        assert math.isclose(latency_stdev, expected_stdev, rel_tol=stdev_tolerance)
