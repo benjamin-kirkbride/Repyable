@@ -9,7 +9,7 @@ import pytest
 from tests.util.real_world_socket import (
     PacketWithTime,
     ReceiveProcess,
-    get_multiple_real_world_sockets,
+    get_real_world_sockets,
 )
 
 
@@ -25,7 +25,7 @@ from tests.util.real_world_socket import (
     ],
 )
 def test_jitter(num_packets: int, base_latency: float, jitter: float) -> None:
-    with get_multiple_real_world_sockets("client", "server") as rws_dict:
+    with get_real_world_sockets("client", "server") as rws_dict:
         # give 50ms of extra time for the packets to be processed
         safe_max_latency = (base_latency + jitter) + 0.050
 

@@ -1,110 +1,89 @@
 """Module for simulating real-world network conditions in socket communications."""
 
 import contextlib
+import heapq
 import logging
 import logging.config
-import multiprocessing as mp
+import queue
 import random
-import sched
 import socket
+import threading
 import time
 from collections.abc import Generator
-from typing import Any, Literal, NamedTuple, TypedDict
+from dataclasses import dataclass, field
+from typing import Any, Literal, NamedTuple
 
-from repyable.safe_process import SafeProcess
+from repyable.parallel import SafeThread
 
 logger = logging.getLogger(__name__)
 
 
-class SchedulerEnterArgs(TypedDict):
-    """Type definition for the arguments of the `enter` method of sched.scheduler."""
+@dataclass(order=True, frozen=True)
+class PacketSendTask:
+    """A packet to be sent by the scheduler."""
 
-    delay: float
-    priority: int
-    action: Any
-    argument: tuple[Any, ...]
-    kwargs: dict[str, Any]
-
-
-class ScheduledSenderProcessEnterArgs(TypedDict):
-    """Type definition for the arguments of the `enter` method of sched.scheduler."""
-
-    delay: float
-    priority: int
-    action: Literal["send", "sendto"]
-    argument: tuple[Any, ...]
-    kwargs: dict[str, Any]
+    method: Literal["send", "sendto"] = field(compare=False)
+    scheduled_time: float
+    data: bytes = field(compare=False)
+    destination_address: tuple[str, int] | None = field(default=None, compare=False)
 
 
-class ScheduledSenderProcess(SafeProcess):
-    """A process that runs a scheduler."""
+class PacketSender(SafeThread):
+    """A thread that executes functions with a given priority."""
 
     use_stop_event = True
 
-    def __init__(
-        self,
-        *args: Any,
-        socket: socket.socket,
-        **kwargs: Any,
-    ) -> None:
-        """Initializes a SchedulerProcess object."""
-        super().__init__(*args, **kwargs)
+    def __init__(self, socket: socket.socket, name: str) -> None:
+        """Initializes a PriorityExecutor object."""
+        super().__init__(name=name)
         self._socket = socket
-        self.scheduler = sched.scheduler()
+        self._empty_queue_event = threading.Event()
 
-        self.queue: mp.Queue[SchedulerEnterArgs] = mp.Queue()
+        self._queue: queue.SimpleQueue[PacketSendTask] = queue.SimpleQueue()
+        self._heap: list[PacketSendTask] = []
+
+    def submit(self, item: Any) -> None:
+        """Submit a function to be executed with a given priority."""
+        self._queue.put(item)
+
+    def _process_queue(self) -> None:
+        """Process the queue of items."""
+        while not self._queue.empty():
+            item = self._queue.get()
+            heapq.heappush(self._heap, item)
+            if self._empty_queue_event.is_set():
+                self._empty_queue_event.clear()
 
     def user_target(self) -> None:
-        """Runs the scheduler."""
+        """Process the queue of items."""
         assert self._stop_event is not None
         while not self._stop_event.is_set():
-            while not self.queue.empty():
-                enter_args = self.queue.get()
+            time.sleep(0.0001)
+            self._process_queue()
+            try:
+                if self._heap[0].scheduled_time <= time.monotonic():
+                    task = heapq.heappop(self._heap)
+                    if task.method == "send":
+                        self._socket.send(task.data)
+                        continue
 
-                if enter_args["action"] == "send":
-                    action: Any = self._socket.send
-                elif enter_args["action"] == "sendto":
-                    action = self._socket.sendto
-                else:
-                    msg = f"Invalid action: {enter_args['action']}"
+                    if task.method == "sendto":
+                        assert task.destination_address is not None
+                        self._socket.sendto(task.data, task.destination_address)
+                        continue
+
+                    msg = f"Invalid method: {task.method}"
                     raise ValueError(msg)
+            except IndexError:
+                self._empty_queue_event.set()
 
-                new_enter_args = SchedulerEnterArgs(
-                    delay=enter_args["delay"],
-                    priority=enter_args["priority"],
-                    action=action,
-                    argument=enter_args["argument"],
-                    kwargs=enter_args["kwargs"],
-                )
-                self.scheduler.enter(**new_enter_args)
+        if not self._empty_queue_event.is_set():
+            self._empty_queue_event.set()
 
-            self.scheduler.run(blocking=False)
-
-    def enter(  # noqa: PLR0913
-        self,
-        delay: float,
-        priority: int,
-        action: Any,
-        argument: tuple[Any, ...] = (),
-        kwargs: dict[str, Any] = {},  # noqa: B006
-    ) -> None:
-        """Schedule an action to be executed by the scheduler.
-
-        Args:
-            delay (float): The time in seconds to wait before executing the action.
-            priority (int): The priority of the action.
-            action (Any): The action to be executed.
-            argument (tuple): The arguments to be passed to the action.
-            kwargs (dict): The keyword arguments to be passed to the action.
-        """
-        enter_args = SchedulerEnterArgs(
-            delay=delay,
-            priority=priority,
-            action=action,
-            argument=argument,
-            kwargs=kwargs,
-        )
-        self.queue.put(enter_args)
+    @property
+    def empty(self) -> bool:
+        """Check if the queue is empty."""
+        return self._empty_queue_event.is_set()
 
 
 class RealWorldUDPSocket:
@@ -125,28 +104,33 @@ class RealWorldUDPSocket:
 
         self._socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-        self._scheduler_process = ScheduledSenderProcess(socket=self._socket)
+        self._packet_sender = PacketSender(
+            socket=self._socket, name=f"{name} Packet Sender"
+        )
 
         self._packet_loss_rate: float = 0.0
         self._base_latency: float = 0.0
         self._jitter: float = 0.0
 
-    def start_scheduler(self) -> None:
+    def start_sender(self) -> None:
         """Start."""
-        self._scheduler_process.start()
+        self._packet_sender.start()
 
-    def stop_scheduler(self) -> None:
+    def stop_sender(self) -> None:
         """Stop."""
-        self._scheduler_process.stop()
-        self._scheduler_process.join()
+        self._packet_sender.stop()
+        self._packet_sender.join()
+        if not self._packet_sender.empty:
+            msg = "Packet sender queue is not empty."
+            raise RuntimeError(msg)
 
     def join_scheduler(self, timeout: float | None = None) -> None:
         """Join."""
-        self._scheduler_process.join(timeout=timeout)
+        self._packet_sender.join(timeout=timeout)
 
     def scheduler_is_alive(self) -> bool:
         """Check if the scheduler is alive."""
-        return self._scheduler_process.is_alive()
+        return self._packet_sender.is_alive()
 
     def connect(self, host: str, port: int) -> None:
         """Connect the socket to a remote address.
@@ -197,17 +181,15 @@ class RealWorldUDPSocket:
         """
         # Packet loss simulation
         if not random.random() <= self._packet_loss_rate:  # noqa: S311
-            # schedule the send action
-            logger.debug(f"{self.name}: Scheduled `send` action for {data.decode()=}.")
-            self._scheduler_process.enter(
-                delay=self._simulate_latency(),
-                priority=1,
-                action="send",
-                argument=(data,),
-            )
-        else:
             # packet loss did occur
             logger.debug(f"{self.name}: Packet loss occurred for {data.decode()=}.")
+            return len(data)
+
+        # schedule the send action
+        logger.debug(f"{self.name}: Scheduled `send` action for {data.decode()=}.")
+        send_time = time.monotonic() + self._simulate_latency()
+        task = PacketSendTask(method="send", scheduled_time=send_time, data=data)
+        self._packet_sender.submit(task)
         return len(data)
 
     def sendto(self, data: bytes, address: tuple[str, int]) -> int:
@@ -221,21 +203,21 @@ class RealWorldUDPSocket:
             int: The number of bytes sent.
         """
         # Packet loss simulation
-        if not random.random() <= self._packet_loss_rate:  # noqa: S311
-            # schedule the sendto action
-            logger.debug(
-                f"{self.name}: Scheduled `sendto` action for {data.decode()=}."
-            )
-            self._scheduler_process.enter(
-                delay=self._simulate_latency(),
-                priority=1,
-                action="sendto",
-                argument=(data, address),
-            )
-        else:
+        if random.random() <= self._packet_loss_rate:  # noqa: S311
             # packet loss did occur
             logger.debug(f"{self.name}: Packet loss occurred for {data.decode()=}.")
+            return len(data)
 
+        # schedule the sendto action
+        logger.debug(f"{self.name}: Scheduled `sendto` action for {data.decode()=}.")
+        send_time = time.monotonic() + self._simulate_latency()
+        task = PacketSendTask(
+            method="sendto",
+            scheduled_time=send_time,
+            data=data,
+            destination_address=address,
+        )
+        self._packet_sender.submit(task)
         return len(data)
 
     def recv(self, buffer_size: int) -> bytes:
@@ -263,10 +245,6 @@ class RealWorldUDPSocket:
         received, address = self._socket.recvfrom(buffer_size)
         logger.debug(f"{self.name}: Received `{received.decode()=}` from {address=}.")
         return received, address
-
-    def close(self) -> None:
-        """Close the socket."""
-        self._socket.close()
 
     def _simulate_latency(self) -> float:
         """Simulate latency by delaying the data."""
@@ -315,9 +293,14 @@ class RealWorldUDPSocket:
             raise ValueError(msg)
         self._jitter = value
 
+    @property
+    def empty(self) -> bool:
+        """Check if the packet sender queue is empty."""
+        return self._packet_sender.empty
+
 
 @contextlib.contextmanager
-def get_multiple_real_world_sockets(
+def get_real_world_sockets(
     *names: str,
     start_scheduler: bool = True,
     bind: bool = False,
@@ -326,16 +309,14 @@ def get_multiple_real_world_sockets(
     sockets = {name: RealWorldUDPSocket(name=name) for name in names}
     for rws in sockets.values():
         if start_scheduler:
-            rws.start_scheduler()
+            rws.start_sender()
         if bind:
             rws.bind(("localhost", 0))
     try:
         yield sockets
     finally:
         for rws in sockets.values():
-            rws.close()
-            if rws.scheduler_is_alive():
-                rws.stop_scheduler()
+            rws.stop_sender()
 
         for rws in sockets.values():
             rws.join_scheduler(timeout=1)
@@ -381,7 +362,7 @@ def _process_packets(raw_packets: list[RawPacket]) -> list[PacketWithTime]:
     return packets
 
 
-class ReceiveProcess(SafeProcess):
+class ReceiveProcess(SafeThread):
     """Receives packets from a socket and measures the time it takes for each."""
 
     use_stop_event = True

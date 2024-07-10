@@ -19,8 +19,8 @@ def test_packet_loss(expected_loss_rate: float) -> None:
     server.bind(("localhost", 0))
     address = server.getsockname()
 
-    client.start_scheduler()
-    server.start_scheduler()
+    client.start_sender()
+    server.start_sender()
 
     # Set the packet loss rate
     client.packet_loss_rate = expected_loss_rate
@@ -50,8 +50,8 @@ def test_packet_loss(expected_loss_rate: float) -> None:
         ), f"Expected loss rate between {lower_loss_rate:.2f} and {upper_loss_rate:.2f}, but got {actual_loss_rate:.2f}"
 
     finally:
-        client.stop_scheduler()
-        server.stop_scheduler()
+        client.stop_sender()
+        server.stop_sender()
         client.close()
         server.close()
 
@@ -64,8 +64,8 @@ def test_total_packet_loss() -> None:
     server.bind(("localhost", 0))
     address = server.getsockname()
 
-    client.start_scheduler()
-    server.start_scheduler()
+    client.start_sender()
+    server.start_sender()
 
     try:
         # Set a high packet loss rate
@@ -92,7 +92,7 @@ def test_total_packet_loss() -> None:
         ), f"Expected 0 packets, but received {received_packets}"
 
     finally:
-        client.stop_scheduler()
-        server.stop_scheduler()
+        client.stop_sender()
+        server.stop_sender()
         client.close()
         server.close()
