@@ -5,12 +5,15 @@
     "autouse",
     "caplog",
     "DGRAM",
+    "getpid",
     "getplugin",
     "levelname",
     "Mypy",
     "pluginmanager",
+    "POLLIN",
     "pytest",
     "pytestconfig",
+    "redef",
     "repyable"
   ]
 }

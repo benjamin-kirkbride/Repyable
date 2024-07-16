@@ -4,18 +4,21 @@ import contextlib
 import heapq
 import logging
 import logging.config
+import multiprocessing as mp
+import multiprocessing.synchronize
 import queue
 import random
 import socket
-import threading
 import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from typing import Any, Literal, NamedTuple
 
-from repyable.parallel import SafeThread
+from repyable.parallel import SafeProcess
 
 logger = logging.getLogger(__name__)
+
+MIN_LATENCY = 0.0015
 
 
 @dataclass(order=True, frozen=True)
@@ -28,7 +31,7 @@ class PacketSendTask:
     destination_address: tuple[str, int] | None = field(default=None, compare=False)
 
 
-class PacketSender(SafeThread):
+class PacketSender(SafeProcess):
     """A thread that executes functions with a given priority."""
 
     use_stop_event = True
@@ -37,9 +40,9 @@ class PacketSender(SafeThread):
         """Initializes a PriorityExecutor object."""
         super().__init__(name=name)
         self._socket = socket
-        self._empty_queue_event = threading.Event()
+        self.empty_send_queue = mp.Event()
 
-        self._queue: queue.SimpleQueue[PacketSendTask] = queue.SimpleQueue()
+        self._queue: mp.SimpleQueue[PacketSendTask] = mp.SimpleQueue()
         self._heap: list[PacketSendTask] = []
 
     def submit(self, item: Any) -> None:
@@ -51,39 +54,45 @@ class PacketSender(SafeThread):
         while not self._queue.empty():
             item = self._queue.get()
             heapq.heappush(self._heap, item)
-            if self._empty_queue_event.is_set():
-                self._empty_queue_event.clear()
+            if self.empty_send_queue.is_set():
+                self.empty_send_queue.clear()
 
     def user_target(self) -> None:
         """Process the queue of items."""
+        stop_check_counter = 0
+
         assert self._stop_event is not None
-        while not self._stop_event.is_set():
-            time.sleep(0.0001)
+        while True:
+            stop_check_counter += 1
+            if stop_check_counter % 100 == 0 and self._stop_event.is_set():
+                logger.info(f"{self.name}: ack stop signal")
+                break
+
             self._process_queue()
             try:
-                if self._heap[0].scheduled_time <= time.monotonic():
-                    task = heapq.heappop(self._heap)
-                    if task.method == "send":
-                        self._socket.send(task.data)
-                        continue
-
-                    if task.method == "sendto":
-                        assert task.destination_address is not None
-                        self._socket.sendto(task.data, task.destination_address)
-                        continue
-
-                    msg = f"Invalid method: {task.method}"
-                    raise ValueError(msg)
+                task_ready = self._heap[0].scheduled_time - 0.002 <= time.monotonic()
             except IndexError:
-                self._empty_queue_event.set()
+                self.empty_send_queue.set()
+                continue
 
-        if not self._empty_queue_event.is_set():
-            self._empty_queue_event.set()
+            if task_ready:
+                task = heapq.heappop(self._heap)
+                task_delay = task.scheduled_time - time.monotonic()
+                logger.warning(
+                    f"{self.name}: Task delayed by {task_delay:.3f} seconds."
+                )
 
-    @property
-    def empty(self) -> bool:
-        """Check if the queue is empty."""
-        return self._empty_queue_event.is_set()
+                if task.method == "send":
+                    self._socket.send(task.data)
+                    continue
+
+                if task.method == "sendto":
+                    assert task.destination_address is not None
+                    self._socket.sendto(task.data, task.destination_address)
+                    continue
+
+                msg = f"Invalid method: {task.method}"
+                raise ValueError(msg)
 
 
 class RealWorldUDPSocket:
@@ -120,9 +129,6 @@ class RealWorldUDPSocket:
         """Stop."""
         self._packet_sender.stop()
         self._packet_sender.join()
-        if not self._packet_sender.empty:
-            msg = "Packet sender queue is not empty."
-            raise RuntimeError(msg)
 
     def join_scheduler(self, timeout: float | None = None) -> None:
         """Join."""
@@ -187,8 +193,13 @@ class RealWorldUDPSocket:
 
         # schedule the send action
         logger.debug(f"{self.name}: Scheduled `send` action for {data.decode()=}.")
-        send_time = time.monotonic() + self._simulate_latency()
-        task = PacketSendTask(method="send", scheduled_time=send_time, data=data)
+        latency = self._simulate_latency()
+        if latency < MIN_LATENCY:
+            self._socket.send(data)
+            return len(data)
+
+        scheduled_time = time.monotonic() + latency
+        task = PacketSendTask(method="send", scheduled_time=scheduled_time, data=data)
         self._packet_sender.submit(task)
         return len(data)
 
@@ -210,10 +221,15 @@ class RealWorldUDPSocket:
 
         # schedule the sendto action
         logger.debug(f"{self.name}: Scheduled `sendto` action for {data.decode()=}.")
-        send_time = time.monotonic() + self._simulate_latency()
+        latency = self._simulate_latency()
+        if latency < MIN_LATENCY:
+            self._socket.sendto(data, address)
+            return len(data)
+
+        scheduled_time = time.monotonic() + latency
         task = PacketSendTask(
             method="sendto",
-            scheduled_time=send_time,
+            scheduled_time=scheduled_time,
             data=data,
             destination_address=address,
         )
@@ -294,9 +310,27 @@ class RealWorldUDPSocket:
         self._jitter = value
 
     @property
-    def empty(self) -> bool:
+    def empty_send_queue(self) -> multiprocessing.synchronize.Event:
         """Check if the packet sender queue is empty."""
-        return self._packet_sender.empty
+        return self._packet_sender.empty_send_queue
+
+    def ensure_empty_send_queue(self) -> None:
+        """Wait until the send queue is empty.
+
+        This is useful for ensuring that all packets have been sent.
+        """
+        empty_count = 0
+        empty_goal = 3
+        while True:
+            if self.empty_send_queue.is_set():
+                empty_count += 1
+            else:
+                empty_count = 0
+
+            if empty_count >= empty_goal:
+                break
+
+            time.sleep(0.1)
 
 
 @contextlib.contextmanager
@@ -360,40 +394,3 @@ def _process_packets(raw_packets: list[RawPacket]) -> list[PacketWithTime]:
         )
         packets.append(packet)
     return packets
-
-
-class ReceiveProcess(SafeThread):
-    """Receives packets from a socket and measures the time it takes for each."""
-
-    use_stop_event = True
-
-    def __init__(
-        self,
-        *args: Any,
-        sock: socket.socket | RealWorldUDPSocket,
-        timeout: float | None = None,
-        **kwargs: Any,
-    ) -> None:
-        """Initializes a ReceiveProcess object."""
-        super().__init__(*args, **kwargs)
-
-        self.socket = sock
-        if timeout is not None:
-            self.socket.settimeout(timeout)
-
-    def user_target(self) -> list[PacketWithTime]:
-        """Receive packets from a socket and measure the time it takes for each."""
-        packets = []
-
-        assert self._stop_event is not None
-        while not self._stop_event.is_set():
-            try:
-                raw_data, address = self.socket.recvfrom(1024)
-                current_time = time.monotonic()
-
-                packets.append((current_time, address, raw_data))
-
-            except TimeoutError:
-                break
-
-        return _process_packets(packets)

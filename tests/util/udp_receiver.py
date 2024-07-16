@@ -1,13 +1,21 @@
+from __future__ import annotations
+
 import contextlib
 import logging
+import multiprocessing as mp
+import select
 import socket
 import time
-from collections.abc import Generator
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from repyable.parallel import SafeProcess
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
 logger = logging.getLogger(__name__)
+
+MAX_PACKET_SIZE = 1200
 
 
 class ReceivedPacket(NamedTuple):
@@ -18,68 +26,185 @@ class ReceivedPacket(NamedTuple):
     data: bytes
 
 
-class UDPReceiver(SafeProcess):
-    """A process that records packets from a UDP socket."""
-
+class _UDPReceiver(SafeProcess):
     use_stop_event = True
 
     def __init__(
-        self, bind_address: tuple[str, int], name: str = "Receiver Server"
+        self,
+        *,
+        sock: socket.socket,
+        receive_queue: mp.Queue[list[ReceivedPacket]],
+        name: str,
+        queue_batch: int | None,
+        queue_timeout: float,
+    ) -> None:
+        super().__init__(name=name)
+        self._socket = sock
+        self._queue_batch = queue_batch
+        self._queue_timeout = queue_timeout
+        self._receive_queue: mp.Queue[list[ReceivedPacket]] = receive_queue
+
+    def _put_in_queue(self) -> None:
+        """Put packets in the receive queue."""
+        if self.packets:
+            logger.info(
+                f"{self.name}: Putting {len(self.packets)} packets in the queue."
+            )
+            self._receive_queue.put(self.packets)
+            self.handled_packets += len(self.packets)
+            self.packets: list[ReceivedPacket] = []
+            self._reset_next_queue_time()
+
+    def _reset_next_queue_time(self) -> None:
+        """Reset the next queue time."""
+        self.next_queue_time = time.monotonic() + self._queue_timeout
+
+    def user_target(self) -> None:
+        """Receive data from a UDP socket."""
+        self.packets: list[ReceivedPacket] = []  # type:ignore[no-redef]
+        self.handled_packets = 0
+        self.next_queue_time = time.monotonic() + self._queue_timeout
+
+        stop_check_counter = 0
+        assert self._stop_event is not None
+        while True:
+            stop_check_counter += 1
+            if stop_check_counter % 10 == 0 and self._stop_event.is_set():
+                break
+
+            if not self.packets:
+                self._reset_next_queue_time()
+
+            try:
+                data, address = self._socket.recvfrom(MAX_PACKET_SIZE + 1)
+            except BlockingIOError:
+                continue
+
+            received_time = time.monotonic()
+
+            if len(data) > MAX_PACKET_SIZE:
+                logger.warning(f"{self.name}: Packet from {address} is too large.")
+                continue
+
+            self.packets.append(ReceivedPacket(address, received_time, data))
+
+            if self._queue_batch is not None and len(self.packets) >= self._queue_batch:
+                self._put_in_queue()
+                continue
+
+            if time.monotonic() > self.next_queue_time:
+                self._put_in_queue()
+                continue
+
+        self._put_in_queue()
+
+        logger.info(f"{self.name}: handled {self.handled_packets} packets.")
+
+
+class UDPReceiverServer:
+    """A process that records packets from a UDP socket."""
+
+    def __init__(
+        self,
+        *,
+        sock: socket.socket | None = None,
+        address: tuple[str, int] | None = None,
+        name: str = "Receiver Process",
+        queue_batch: int = 10_000,
+        queue_timeout: float = 0.5,
+        processes: int = 2,
     ) -> None:
         """Initializes a UDPReceiver object."""
-        super().__init__(name=name)
-        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.name = name
+
+        if sock is not None:
+            self._socket = sock
+        else:
+            self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            if address is None:
+                self._socket.bind(("localhost", 0))
+
         self._socket.setblocking(False)  # noqa: FBT003
-        self._socket.bind(bind_address)
+
+        if address is not None:
+            self._socket.bind(address)
+
+        self._poller = select.poll()
+        self._poller.register(self._socket, select.POLLIN)
 
         self.name = name
         self.bound_address = self._socket.getsockname()
+        self._queue_batch = queue_batch
+        self._queue_timeout = queue_timeout
+        self._processes = processes
+        self._children: list[_UDPReceiver] = []
 
-    def user_target(self) -> list[ReceivedPacket]:
-        """Receive data from a UDP socket."""
-        packets: list[ReceivedPacket] = []
+        self.receive_queue: mp.Queue[list[ReceivedPacket]] = mp.Queue()
 
-        assert self._stop_event is not None
-        while True:
-            try:
-                data, address = self._socket.recvfrom(1024)
-                received_packet = ReceivedPacket(
-                    source=address,
-                    time=time.monotonic(),
-                    data=data,
-                )
-                packets.append(received_packet)
+        self.started = False
 
-            except BlockingIOError:
-                if len(packets) == 10_000:
-                    logger.critical(f"{self.name} received {len(packets)} packets.")
-                if self._stop_event.is_set():
-                    logger.info(f"{self.name}: ack stop signal.")
-                    break
-        logger.info(f"{self.name} received {len(packets)} packets.")
+    def _create_receivers(self) -> None:
+        """Start the receiver children."""
+        for i in range(self._processes):
+            logger.debug(f"{self.name}: Starting child {i}")
+            receiver = _UDPReceiver(
+                sock=self._socket,
+                receive_queue=self.receive_queue,
+                name=f"{self.name} child {i}",
+                queue_batch=self._queue_batch,
+                queue_timeout=self._queue_timeout,
+            )
+            self._children.append(receiver)
+            receiver.start()
 
-        return packets
+    def start(self) -> None:
+        """Receive UDP packets on the specified port and count them."""
+        if self.started:
+            msg = "Receiver already started."
+            raise RuntimeError(msg)
 
-    def clean_up(self) -> None:
-        """Clean Up."""
-        # access the result so the pipe is cleared
-        self.result  # noqa: B018
-        self._socket.close()
-        super()._clean_up()
+        self._create_receivers()
+        self.started = True
+
+    def stop(self) -> None:
+        """Stop the receiver children."""
+        living_children = [child.name for child in self._children if child.is_alive()]
+        if not living_children:
+            self.started = False
+            return
+
+        logger.info(f"{self.name}: Stopping children: {living_children}")
+
+        for child in self._children:
+            child.stop()
+
+    def is_alive(self) -> bool:
+        """Check if the receiver children are alive."""
+        return any(child.is_alive() for child in self._children)
+
+    def join(self, timeout: int = 1) -> None:
+        """Join the receiver children."""
+        if timeout < 0:
+            msg = "Timeout must be greater than or equal to 0."
+            raise ValueError(msg)
+
+        for child in self._children:
+            child.join(timeout=timeout)
 
 
 @contextlib.contextmanager
 def get_udp_receivers(
     *names: str,
     start: bool = True,
-) -> Generator[dict[str, UDPReceiver], None, None]:
+    children: int = 2,
+) -> Generator[dict[str, UDPReceiverServer], None, None]:
     """Get multiple UDPReceiver instances."""
     receivers = {
-        name: UDPReceiver(name=name, bind_address=("localhost", 0)) for name in names
+        name: UDPReceiverServer(name=name, processes=children) for name in names
     }
-    for receiver in receivers.values():
+    for receiver_server in receivers.values():
         if start:
-            receiver.start()
+            receiver_server.start()
     # give time for the receiver to start
     time.sleep(0.1)
     try:
@@ -88,11 +213,48 @@ def get_udp_receivers(
         # give time for the receiver to process all packets
         # this prevents us from having to sleep in every test
         time.sleep(0.01)
-        for receiver in receivers.values():
-            if receiver.is_alive():
-                receiver.stop()
+        for receiver_server in receivers.values():
+            if receiver_server.is_alive():
+                receiver_server.stop()
 
-        for receiver in receivers.values():
-            receiver.join(timeout=30)
-            assert not receiver.is_alive()
-            receiver.close()
+        for receiver_server in receivers.values():
+            receiver_server.join(timeout=1)
+            assert not receiver_server.is_alive()
+
+
+class ProcessedPacket(NamedTuple):
+    """Processed packets from a UDPReceiver."""
+
+    source: tuple[str, int]
+    idx: int
+    scheduled_time: float
+    received_time: float
+    padding: bytes
+
+    def latency(self) -> float:
+        """Calculate the latency of the packet."""
+        return self.received_time - self.scheduled_time
+
+
+def process_packets(
+    packets: list[ReceivedPacket],
+) -> list[ProcessedPacket]:
+    """Process packets received by a UDPReceiver.
+
+    Supported packet format:
+        [[{idx}:{scheduled_time}:{padding}]]
+    """
+    processed_packets = []
+    for packet in packets:
+        source, received_time, data = packet
+        idx, scheduled_time, padding = data[2:-2].decode().split(":")
+        processed_packet = ProcessedPacket(
+            source=source,
+            idx=int(idx),
+            scheduled_time=float(scheduled_time),
+            received_time=received_time,
+            padding=padding.encode(),
+        )
+        processed_packets.append(processed_packet)
+
+    return processed_packets

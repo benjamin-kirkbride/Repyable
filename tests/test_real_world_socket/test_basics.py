@@ -1,11 +1,12 @@
 import logging
-import socket
+import statistics
 import time
 
 import pytest
 
-from tests.util import Timer, UDPReceiver, get_udp_receivers
+from tests.util import Timer, UDPReceiverServer, get_udp_receivers, process_packets
 from tests.util.real_world_socket import get_real_world_sockets
+from tests.util.udp_receiver import ReceivedPacket
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ def test_real_world_udp_socket_send_recv() -> None:
         address = server.getsockname()
 
         # Send data from client to server
-        test_data = b"Hello, World!"
+        test_data = b"Hello, world!"
         client.sendto(test_data, address)
 
         # Receive data on server
@@ -33,48 +34,55 @@ def test_real_world_udp_socket_send_recv() -> None:
 
 
 @pytest.mark.parametrize(
-    ("num_packets", "test_data"),
+    ("num_packets", "packet_size"),
     [
-        (100, b"Hello, World!"),
-        (1_000, b"Hello, World!"),
-        (10_000, b"Hello, World!"),
-        (10, b"Hello, World!" * 50),
-        (100, b"Hello, World!" * 50),
-        (1_000, b"Hello, World!" * 50),
+        # (25, None),
+        # (256, None),
+        # (2_560, None),
+        (25_600, None),
+        (25, 1200),
+        (256, 1200),
+        (2_560, 1200),
+        (25_600, 1200),
     ],
 )
-def benchmark_bandwidth(num_packets: int, test_data: bytes) -> None:
-    """Compare a real world socket with a normal socket in bandwidth."""
-    # Create two normal sockets
-    normal_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    with get_udp_receivers("normal_server") as rws_dict:
-        normal_server = rws_dict["normal_server"]
-
-        with Timer("normal socket sending timer") as normal_timer:
-            for _ in range(num_packets):
-                normal_socket.sendto(test_data, normal_server.bound_address)
-
-    assert normal_server.exception is None
-    assert len(normal_server.result) == num_packets
-
-    with get_real_world_sockets("client") as rws_dict:
-        # Create two real world sockets
+def benchmark_real_world_socket_no_latency(
+    num_packets: int, packet_size: int | None
+) -> None:
+    with (
+        get_real_world_sockets("client") as rws_dict,
+        get_udp_receivers("rw_receiver", children=10) as receiver_dict,
+    ):
         real_world_client = rws_dict["client"]
+        rw_receiver = receiver_dict["rw_receiver"]
 
-        receiver_server = UDPReceiver(bind_address=("localhost", 0))
-        receiver_server.start()
+        with Timer("real world socket sending timer") as real_world_timer:
+            for i in range(num_packets):
+                # if i % 100 == 0:
+                #     time.sleep(0.01)
+                data = f"[[{i}:{time.monotonic()}:]]"
+                if packet_size is not None:
+                    padding_len = packet_size - len(data)
+                    data += "X" * padding_len
+                real_world_client.sendto(data.encode(), rw_receiver.bound_address)
 
-        with Timer("sending timer") as real_world_timer:
-            for _ in range(num_packets):
-                real_world_client.sendto(test_data, receiver_server.bound_address)
-        # queueing up packets using the real world socket is faster
-        # UNLESS there are extremely few packets, but we can ignore that case
-        assert (
-            normal_timer.total_time > real_world_timer.total_time
-            or real_world_timer.total_time < 0.005  # noqa: PLR2004
-        )
+        real_world_client.ensure_empty_send_queue()
 
-        # Wait for the real world server to receive all packets
-        while not real_world_client.empty:
-            time.sleep(0.001)
+        time.sleep(2)
+
+        rw_receiver.stop()
+        time.sleep(2)
+
+        rw_packets: list[ReceivedPacket] = []
+        while not rw_receiver.receive_queue.empty():
+            rw_packets.extend(rw_receiver.receive_queue.get())
+
+        processed_rw_packets = process_packets(rw_packets)
+        assert len(processed_rw_packets) == num_packets
+
+    rw_latencies = [packet.latency() for packet in processed_rw_packets]
+
+    # average rw latency should be less than 0.1ms
+    assert (
+        statistics.mean(rw_latencies) < 1 / 10_000
+    ), f"Average latency >1ms: {statistics.mean(rw_latencies)*10000:.3f}ms"

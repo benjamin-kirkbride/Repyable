@@ -61,19 +61,24 @@ class SafeParallelMixin(ParallelProtocol):
         if not self._not_running.wait(timeout=timeout):
             msg = f"Process {self.name} is still running."
             raise TimeoutError(msg)
-        # we have to clear the pipe before joining
-        # this ensures that the LOCAL/PARENT objects attributes are set properly
-        if self._parent_exception_conn.poll():
-            self.exception  # noqa: B018
 
         if self.is_alive():
             remaining_timeout = (
                 None if timeout is None else timeout - (time.monotonic() - now)
             )
             self._ojoin(timeout=remaining_timeout)
+
+            # we have to clear the pipe before joining
+            # this ensures that the LOCAL/PARENT objects attributes are set properly
+            try:
+                if self._parent_exception_conn.poll():
+                    self.exception  # noqa: B018
+            except (EOFError, BrokenPipeError, OSError):
+                # FIXME: why does this happen?
+                logger.warning(f"{self.name}: Pipe is close when it shouldn't be.")
             self._clean_up()
 
-    def stop(self) -> None:
+    def stop(self, *, strict: bool = False) -> None:
         """Stop the process."""
         logger.info(f"{self.name}: Stopping {type(self)!s}.")
         if self._stop_event is None:
@@ -86,10 +91,14 @@ class SafeParallelMixin(ParallelProtocol):
                 break
             time.sleep(0.01)
         else:
+            if not strict:
+                return
             msg = "Process is not running."
             raise RuntimeError(msg)
 
         assert self._stop_event is not None
+        if self._parent_exception_conn.poll():
+            self.exception  # noqa: B018
         self._stop_event.set()
 
     def run(self) -> None:

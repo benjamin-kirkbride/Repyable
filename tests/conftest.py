@@ -5,6 +5,8 @@ import pytest
 
 from tests import log_queue, queue_handler
 
+logger = logging.getLogger(__name__)
+
 
 @pytest.fixture(autouse=True, scope="session")
 def _setup_logging(pytestconfig):
@@ -22,6 +24,9 @@ def _setup_logging(pytestconfig):
     """
     logging_plugin = pytestconfig.pluginmanager.getplugin("logging-plugin")
 
+    original_handlers = logging.root.handlers.copy()
+    logging.root.handlers.clear()
+
     _listener = logging.handlers.QueueListener(
         log_queue,
         logging_plugin.report_handler,
@@ -30,6 +35,9 @@ def _setup_logging(pytestconfig):
     )
 
     _listener.start()
+    logging.root.addHandler(queue_handler)
     yield
     _listener.stop()
     queue_handler.close()
+
+    logging.root.handlers = original_handlers
