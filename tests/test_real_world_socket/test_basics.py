@@ -86,5 +86,18 @@ def benchmark_real_world_socket_no_latency(
     ), f"Average latency >1ms: {statistics.mean(rw_latencies)*10000:.3f}ms"
 
 
+@pytest.mark.parametrize(
+    ("num_packets", "packet_size"),
+    [
+        (25, None),
+        (256, None),
+        (2_560, None),
+        (25_600, None),
+        (25, 1200),
+        (256, 1200),
+        (2_560, 1200),
+        (25_600, 1200),
+    ],
+)
 def benchmark_real_world_socket_with_latency():
     pass
