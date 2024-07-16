@@ -60,6 +60,7 @@ class PacketSender(SafeProcess):
     def user_target(self) -> None:
         """Process the queue of items."""
         stop_check_counter = 0
+        sent_packets = 0
 
         assert self._stop_event is not None
         while True:

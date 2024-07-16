@@ -36,9 +36,9 @@ def test_real_world_udp_socket_send_recv() -> None:
 @pytest.mark.parametrize(
     ("num_packets", "packet_size"),
     [
-        # (25, None),
-        # (256, None),
-        # (2_560, None),
+        (25, None),
+        (256, None),
+        (2_560, None),
         (25_600, None),
         (25, 1200),
         (256, 1200),
@@ -51,15 +51,13 @@ def benchmark_real_world_socket_no_latency(
 ) -> None:
     with (
         get_real_world_sockets("client") as rws_dict,
-        get_udp_receivers("rw_receiver", children=10) as receiver_dict,
+        get_udp_receivers("rw_receiver", children=5) as receiver_dict,
     ):
         real_world_client = rws_dict["client"]
         rw_receiver = receiver_dict["rw_receiver"]
 
         with Timer("real world socket sending timer") as real_world_timer:
             for i in range(num_packets):
-                # if i % 100 == 0:
-                #     time.sleep(0.01)
                 data = f"[[{i}:{time.monotonic()}:]]"
                 if packet_size is not None:
                     padding_len = packet_size - len(data)
@@ -68,10 +66,10 @@ def benchmark_real_world_socket_no_latency(
 
         real_world_client.ensure_empty_send_queue()
 
-        time.sleep(2)
+        time.sleep(0.1)
 
         rw_receiver.stop()
-        time.sleep(2)
+        time.sleep(0.1)
 
         rw_packets: list[ReceivedPacket] = []
         while not rw_receiver.receive_queue.empty():
@@ -86,3 +84,7 @@ def benchmark_real_world_socket_no_latency(
     assert (
         statistics.mean(rw_latencies) < 1 / 10_000
     ), f"Average latency >1ms: {statistics.mean(rw_latencies)*10000:.3f}ms"
+
+
+def benchmark_real_world_socket_with_latency():
+    pass

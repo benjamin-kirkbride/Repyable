@@ -3,12 +3,13 @@ from __future__ import annotations
 import contextlib
 import logging
 import multiprocessing as mp
+import queue
 import select
 import socket
 import time
 from typing import TYPE_CHECKING, NamedTuple
 
-from repyable.parallel import SafeProcess
+from repyable.parallel import SafeProcess, SafeThread
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -104,13 +105,15 @@ class _UDPReceiver(SafeProcess):
 class UDPReceiverServer:
     """A process that records packets from a UDP socket."""
 
+    use_stop_event = True
+
     def __init__(
         self,
         *,
         sock: socket.socket | None = None,
         address: tuple[str, int] | None = None,
         name: str = "Receiver Process",
-        queue_batch: int = 10_000,
+        queue_batch: int = 100_000,
         queue_timeout: float = 0.5,
         processes: int = 2,
     ) -> None:
@@ -166,16 +169,12 @@ class UDPReceiverServer:
         self._create_receivers()
         self.started = True
 
-    def stop(self) -> None:
+    def stop(self, *, strict: bool = False) -> None:
         """Stop the receiver children."""
-        living_children = [child.name for child in self._children if child.is_alive()]
-        if not living_children:
-            self.started = False
-            return
-
-        logger.info(f"{self.name}: Stopping children: {living_children}")
-
-        for child in self._children:
+        living_children = [child for child in self._children if child.is_alive()]
+        living_children_names = [child.name for child in living_children]
+        logger.info(f"{self.name}: Stopping children: {living_children_names}")
+        for child in living_children:
             child.stop()
 
     def is_alive(self) -> bool:
