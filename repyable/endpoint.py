@@ -2,68 +2,67 @@ import random
 import socket
 import struct
 import time
+from typing import Any
 
-from repyable import MAX_PACKET_SIZE
-
-MAX_CLIENTS = 64
-TIMEOUT = 5.0
-PACKET_SALT_SIZE = 8
+MAX_CLIENTS: int = 64
+TIMEOUT: float = 5.0
+PACKET_SALT_SIZE: int = 8
 
 
 class Packet:
-    CONNECTION_REQUEST = 0
-    CHALLENGE = 1
-    CHALLENGE_RESPONSE = 2
-    CONNECTION_ACCEPTED = 3
-    CONNECTION_DENIED = 4
-    PAYLOAD = 5
-    DISCONNECT = 6
+    CONNECTION_REQUEST: int = 0
+    CHALLENGE: int = 1
+    CHALLENGE_RESPONSE: int = 2
+    CONNECTION_ACCEPTED: int = 3
+    CONNECTION_DENIED: int = 4
+    PAYLOAD: int = 5
+    DISCONNECT: int = 6
 
     @staticmethod
-    def pack(packet_type, client_salt, server_salt, payload=b""):
+    def pack(packet_type: int, client_salt: int, server_salt: int, payload: bytes = b"") -> bytes:
         return struct.pack("!BQQ", packet_type, client_salt, server_salt) + payload
 
     @staticmethod
-    def unpack(data):
+    def unpack(data: bytes) -> tuple[int, int, int, bytes]:
         packet_type, client_salt, server_salt = struct.unpack("!BQQ", data[:17])
         return packet_type, client_salt, server_salt, data[17:]
 
 
 class Client:
-    def __init__(self, server_address):
-        self.server_address = server_address
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.state = "disconnected"
-        self.client_salt = random.randint(0, 2**64 - 1)
-        self.server_salt = 0
-        self.last_packet_time = 0
+    def __init__(self, server_address: tuple[str, int]):
+        self.server_address: tuple[str, int] = server_address
+        self.socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.state: str = "disconnected"
+        self.client_salt: int = random.randint(0, 2**64 - 1)
+        self.server_salt: int = 0
+        self.last_packet_time: float = 0
 
-    def connect(self):
+    def connect(self) -> None:
         self.state = "connecting"
         self.send_connection_request()
 
-    def send_connection_request(self):
+    def send_connection_request(self) -> None:
         packet = Packet.pack(Packet.CONNECTION_REQUEST, self.client_salt, 0)
         self.socket.sendto(packet, self.server_address)
 
-    def send_challenge_response(self, challenge):
+    def send_challenge_response(self, challenge: int) -> None:
         packet = Packet.pack(Packet.CHALLENGE_RESPONSE, self.client_salt, challenge)
         self.socket.sendto(packet, self.server_address)
 
-    def send_payload(self, payload):
+    def send_payload(self, payload: bytes) -> None:
         packet = Packet.pack(
             Packet.PAYLOAD, self.client_salt, self.server_salt, payload
         )
         self.socket.sendto(packet, self.server_address)
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         if self.state == "connected":
             packet = Packet.pack(Packet.DISCONNECT, self.client_salt, self.server_salt)
             for _ in range(10):
                 self.socket.sendto(packet, self.server_address)
         self.state = "disconnected"
 
-    def update(self):
+    def update(self) -> None:
         if self.state == "disconnected":
             return
 
@@ -91,7 +90,7 @@ class Client:
                 print("Server disconnected")
 
             self.last_packet_time = time.time()
-        except socket.error:
+        except OSError:
             pass
 
         if time.time() - self.last_packet_time > TIMEOUT:
@@ -100,17 +99,17 @@ class Client:
 
 
 class Server:
-    def __init__(self, address):
-        self.address = address
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    def __init__(self, address: tuple[str, int]):
+        self.address: tuple[str, int] = address
+        self.socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(address)
-        self.clients = {}
-        self.pending_clients = {}
+        self.clients: dict[tuple[str, int], dict[str, Any]] = {}
+        self.pending_clients: dict[tuple[str, int], dict[str, Any]] = {}
 
-    def find_free_client_slot(self):
+    def find_free_client_slot(self) -> int | None:
         return None if len(self.clients) >= MAX_CLIENTS else len(self.clients)
 
-    def update(self):
+    def update(self) -> None:
         try:
             data, addr = self.socket.recvfrom(1024)
             packet_type, client_salt, server_salt, payload = Packet.unpack(data)
@@ -123,12 +122,12 @@ class Server:
                 self.handle_payload(addr, client_salt, server_salt, payload)
             elif packet_type == Packet.DISCONNECT:
                 self.handle_disconnect(addr, client_salt, server_salt)
-        except socket.error:
+        except OSError:
             pass
 
         self.check_timeouts()
 
-    def handle_connection_request(self, addr, client_salt):
+    def handle_connection_request(self, addr: tuple[str, int], client_salt: int) -> None:
         if addr not in self.pending_clients and addr not in self.clients:
             if self.find_free_client_slot() is not None:
                 challenge = random.randint(0, 2**64 - 1)
@@ -143,7 +142,7 @@ class Server:
                 packet = Packet.pack(Packet.CONNECTION_DENIED, client_salt, 0)
                 self.socket.sendto(packet, addr)
 
-    def handle_challenge_response(self, addr, client_salt, server_salt):
+    def handle_challenge_response(self, addr: tuple[str, int], client_salt: int, server_salt: int) -> None:
         if addr in self.pending_clients:
             pending = self.pending_clients[addr]
             if (
@@ -171,7 +170,7 @@ class Server:
                     )
                     self.socket.sendto(packet, addr)
 
-    def handle_payload(self, addr, client_salt, server_salt, payload):
+    def handle_payload(self, addr: tuple[str, int], client_salt: int, server_salt: int, payload: bytes) -> None:
         if addr in self.clients:
             client = self.clients[addr]
             if (
@@ -184,7 +183,7 @@ class Server:
                 packet = Packet.pack(Packet.PAYLOAD, client_salt, server_salt, payload)
                 self.socket.sendto(packet, addr)
 
-    def handle_disconnect(self, addr, client_salt, server_salt):
+    def handle_disconnect(self, addr: tuple[str, int], client_salt: int, server_salt: int) -> None:
         if addr in self.clients:
             client = self.clients[addr]
             if (
@@ -194,7 +193,7 @@ class Server:
                 del self.clients[addr]
                 print(f"Client {addr} disconnected")
 
-    def check_timeouts(self):
+    def check_timeouts(self) -> None:
         current_time = time.time()
         for addr in list(self.pending_clients.keys()):
             if current_time - self.pending_clients[addr]["time"] > TIMEOUT:
