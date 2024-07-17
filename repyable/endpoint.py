@@ -1,313 +1,228 @@
+import random
 import socket
 import struct
-import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, field
 
 from repyable import MAX_PACKET_SIZE
-from repyable.circular_buffer import CircularBuffer
 
-# Format: sequence (2 bytes), ack (2 bytes), ack_bits (4 bytes)
-HEADER_FORMAT = "!HHI"
-
-# Format: fragment_id (1 byte), total_fragments (1 byte)
-FRAGMENT_FOOTER_FORMAT = "!BB"
-
-# Format: sequence (2 bytes), ack (2 bytes), ack_bits (4 bytes)
-# fragment_id (1 byte), total_fragments (1 byte)
-FRAGMENT_FORMAT = "!HHIBB"
+MAX_CLIENTS = 64
+TIMEOUT = 5.0
+PACKET_SALT_SIZE = 8
 
 
-@dataclass
 class Packet:
-    sequence: int
-    data: bytes
-    send_time: float = field(default_factory=time.time)
+    CONNECTION_REQUEST = 0
+    CHALLENGE = 1
+    CHALLENGE_RESPONSE = 2
+    CONNECTION_ACCEPTED = 3
+    CONNECTION_DENIED = 4
+    PAYLOAD = 5
+    DISCONNECT = 6
+
+    @staticmethod
+    def pack(packet_type, client_salt, server_salt, payload=b""):
+        return struct.pack("!BQQ", packet_type, client_salt, server_salt) + payload
+
+    @staticmethod
+    def unpack(data):
+        packet_type, client_salt, server_salt = struct.unpack("!BQQ", data[:17])
+        return packet_type, client_salt, server_salt, data[17:]
 
 
-class ReliableEndpoint:
-    def __init__(
-        self,
-        sock: socket.socket,
-        max_packet_size: int = MAX_PACKET_SIZE,
-        fragment_above: int = 1000,
-        max_fragments: int = 16,
-        fragment_size: int = 500,
-        buffer_size: int = 256,
-        ack_buffer_size: int = 32,
-        rtt_smoothing_factor: float = 0.1,
-        packet_loss_smoothing_factor: float = 0.1,
-        bandwidth_smoothing_factor: float = 0.1,
-        process_packet_callback: Callable[[bytes], bool] = lambda x: True,
-    ) -> None:
-        self.sock = sock
-        self.max_packet_size = max_packet_size
-        self.fragment_above = fragment_above
-        self.max_fragments = max_fragments
-        self.fragment_size = fragment_size
-        self.ack_buffer_size = ack_buffer_size
-        self.rtt_smoothing_factor = rtt_smoothing_factor
-        self.packet_loss_smoothing_factor = packet_loss_smoothing_factor
-        self.bandwidth_smoothing_factor = bandwidth_smoothing_factor
-        self.process_packet_callback = process_packet_callback
+class Client:
+    def __init__(self, server_address):
+        self.server_address = server_address
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.state = "disconnected"
+        self.client_salt = random.randint(0, 2**64 - 1)
+        self.server_salt = 0
+        self.last_packet_time = 0
 
-        self.sequence: int = 0
-        self.acks: list[int] = []
-        self.sent_packets: CircularBuffer[Packet] = CircularBuffer(buffer_size)
-        self.received_packets: CircularBuffer[Packet] = CircularBuffer(buffer_size)
-        self.fragments: dict[int, list[bytes | None]] = {}
+    def connect(self):
+        self.state = "connecting"
+        self.send_connection_request()
 
-        self.rtt: float = 0.0
-        self.packet_loss: float = 0.0
-        self.sent_bandwidth: float = 0.0
-        self.received_bandwidth: float = 0.0
-        self.acked_bandwidth: float = 0.0
+    def send_connection_request(self):
+        packet = Packet.pack(Packet.CONNECTION_REQUEST, self.client_salt, 0)
+        self.socket.sendto(packet, self.server_address)
 
-        self.last_update_time: float = time.time()
-        self.running: bool = False
-        self.receive_thread: threading.Thread | None = None
+    def send_challenge_response(self, challenge):
+        packet = Packet.pack(Packet.CHALLENGE_RESPONSE, self.client_salt, challenge)
+        self.socket.sendto(packet, self.server_address)
 
-    def start(self) -> None:
-        self.running = True
-        self.receive_thread = threading.Thread(target=self._receive_loop)
-        self.receive_thread.start()
+    def send_payload(self, payload):
+        packet = Packet.pack(
+            Packet.PAYLOAD, self.client_salt, self.server_salt, payload
+        )
+        self.socket.sendto(packet, self.server_address)
 
-    def stop(self) -> None:
-        self.running = False
-        if self.receive_thread:
-            self.receive_thread.join()
+    def disconnect(self):
+        if self.state == "connected":
+            packet = Packet.pack(Packet.DISCONNECT, self.client_salt, self.server_salt)
+            for _ in range(10):
+                self.socket.sendto(packet, self.server_address)
+        self.state = "disconnected"
 
-    def _receive_loop(self) -> None:
-        while self.running:
-            self._update()
-            try:
-                data, addr = self.sock.recvfrom(self.max_packet_size)
-                self._process_received_data(data)
-            except TimeoutError:
-                pass
+    def update(self):
+        if self.state == "disconnected":
+            return
 
-    def _process_received_data(self, data: bytes) -> None:
-        sequence, ack, ack_bits = struct.unpack(HEADER_FORMAT, data[:8])
-        payload = data[8:]
+        try:
+            data, addr = self.socket.recvfrom(1024)
+            packet_type, client_salt, server_salt, payload = Packet.unpack(data)
 
-        if len(payload) > self.fragment_above:
-            self._process_fragment(sequence, payload)
-        else:
-            self._process_packet(sequence, payload)
+            if packet_type == Packet.CHALLENGE and self.state == "connecting":
+                self.server_salt = server_salt
+                self.send_challenge_response(server_salt)
+                self.state = "challenging"
+            elif (
+                packet_type == Packet.CONNECTION_ACCEPTED
+                and self.state == "challenging"
+            ):
+                self.state = "connected"
+                print("Connected to server")
+            elif packet_type == Packet.CONNECTION_DENIED:
+                self.state = "disconnected"
+                print("Connection denied")
+            elif packet_type == Packet.PAYLOAD and self.state == "connected":
+                print(f"Received payload: {payload.decode()}")
+            elif packet_type == Packet.DISCONNECT and self.state == "connected":
+                self.state = "disconnected"
+                print("Server disconnected")
 
-        self._process_acks(ack, ack_bits)
+            self.last_packet_time = time.time()
+        except socket.error:
+            pass
 
-    def _process_fragment(self, sequence: int, data: bytes) -> None:
-        fragment_id, total_fragments = struct.unpack(FRAGMENT_FOOTER_FORMAT, data[:2])
-        fragment_data = data[2:]
+        if time.time() - self.last_packet_time > TIMEOUT:
+            self.state = "disconnected"
+            print("Connection timed out")
 
-        if sequence not in self.fragments:
-            self.fragments[sequence] = [None] * total_fragments
 
-        self.fragments[sequence][fragment_id] = fragment_data
+class Server:
+    def __init__(self, address):
+        self.address = address
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind(address)
+        self.clients = {}
+        self.pending_clients = {}
 
-        if all(self.fragments[sequence]):
-            complete_data = b"".join(
-                fragment
-                for fragment in self.fragments[sequence]
-                if fragment is not None
-            )
-            del self.fragments[sequence]
-            self._process_packet(sequence, complete_data)
+    def find_free_client_slot(self):
+        return None if len(self.clients) >= MAX_CLIENTS else len(self.clients)
 
-    def _process_packet(self, sequence: int, data: bytes) -> None:
-        if self.process_packet_callback(data):
-            self.received_packets.push(Packet(sequence, data))
-            self.acks.append(sequence)
-            if len(self.acks) > self.ack_buffer_size:
-                self.acks.pop(0)
+    def update(self):
+        try:
+            data, addr = self.socket.recvfrom(1024)
+            packet_type, client_salt, server_salt, payload = Packet.unpack(data)
 
-    def _process_acks(self, ack: int, ack_bits: int) -> None:
-        for i in range(32):
-            if ack_bits & (1 << i):
-                acked_sequence = (ack - i) % 65536
-                for j in range(len(self.sent_packets)):
-                    if self.sent_packets[j].sequence == acked_sequence:
-                        self._update_rtt(self.sent_packets[j])
-                        break
+            if packet_type == Packet.CONNECTION_REQUEST:
+                self.handle_connection_request(addr, client_salt)
+            elif packet_type == Packet.CHALLENGE_RESPONSE:
+                self.handle_challenge_response(addr, client_salt, server_salt)
+            elif packet_type == Packet.PAYLOAD:
+                self.handle_payload(addr, client_salt, server_salt, payload)
+            elif packet_type == Packet.DISCONNECT:
+                self.handle_disconnect(addr, client_salt, server_salt)
+        except socket.error:
+            pass
 
-    def _update_rtt(self, acked_packet: Packet) -> None:
+        self.check_timeouts()
+
+    def handle_connection_request(self, addr, client_salt):
+        if addr not in self.pending_clients and addr not in self.clients:
+            if self.find_free_client_slot() is not None:
+                challenge = random.randint(0, 2**64 - 1)
+                self.pending_clients[addr] = {
+                    "client_salt": client_salt,
+                    "server_salt": challenge,
+                    "time": time.time(),
+                }
+                packet = Packet.pack(Packet.CHALLENGE, client_salt, challenge)
+                self.socket.sendto(packet, addr)
+            else:
+                packet = Packet.pack(Packet.CONNECTION_DENIED, client_salt, 0)
+                self.socket.sendto(packet, addr)
+
+    def handle_challenge_response(self, addr, client_salt, server_salt):
+        if addr in self.pending_clients:
+            pending = self.pending_clients[addr]
+            if (
+                pending["client_salt"] == client_salt
+                and pending["server_salt"] == server_salt
+            ):
+                slot = self.find_free_client_slot()
+                if slot is not None:
+                    self.clients[addr] = {
+                        "client_salt": client_salt,
+                        "server_salt": server_salt,
+                        "time": time.time(),
+                    }
+                    packet = Packet.pack(
+                        Packet.CONNECTION_ACCEPTED,
+                        client_salt,
+                        server_salt,
+                        struct.pack("!I", slot),
+                    )
+                    self.socket.sendto(packet, addr)
+                    del self.pending_clients[addr]
+                else:
+                    packet = Packet.pack(
+                        Packet.CONNECTION_DENIED, client_salt, server_salt
+                    )
+                    self.socket.sendto(packet, addr)
+
+    def handle_payload(self, addr, client_salt, server_salt, payload):
+        if addr in self.clients:
+            client = self.clients[addr]
+            if (
+                client["client_salt"] == client_salt
+                and client["server_salt"] == server_salt
+            ):
+                client["time"] = time.time()
+                print(f"Received payload from {addr}: {payload.decode()}")
+                # Echo the payload back to the client
+                packet = Packet.pack(Packet.PAYLOAD, client_salt, server_salt, payload)
+                self.socket.sendto(packet, addr)
+
+    def handle_disconnect(self, addr, client_salt, server_salt):
+        if addr in self.clients:
+            client = self.clients[addr]
+            if (
+                client["client_salt"] == client_salt
+                and client["server_salt"] == server_salt
+            ):
+                del self.clients[addr]
+                print(f"Client {addr} disconnected")
+
+    def check_timeouts(self):
         current_time = time.time()
-        rtt = current_time - acked_packet.send_time
-        self.rtt = (
-            self.rtt * (1 - self.rtt_smoothing_factor) + rtt * self.rtt_smoothing_factor
-        )
+        for addr in list(self.pending_clients.keys()):
+            if current_time - self.pending_clients[addr]["time"] > TIMEOUT:
+                del self.pending_clients[addr]
 
-    def send_packet(self, data: bytes) -> None:
-        if len(data) > self.max_packet_size:
-            self._send_fragmented(data)
-        else:
-            self._send_single(data)
-
-    def _send_single(self, data: bytes) -> None:
-        sequence = self._next_sequence()
-        ack, ack_bits = self._get_ack_data()
-
-        header = struct.pack(HEADER_FORMAT, sequence, ack, ack_bits)
-        packet = header + data
-
-        self.sock.sendto(packet, self.sock.getpeername())
-        self.sent_packets.push(Packet(sequence, data))
-
-    def _send_fragmented(self, data: bytes) -> None:
-        sequence = self._next_sequence()
-        fragments = [
-            data[i : i + self.fragment_size]
-            for i in range(0, len(data), self.fragment_size)
-        ]
-
-        for i, fragment in enumerate(fragments):
-            ack, ack_bits = self._get_ack_data()
-
-            header = struct.pack(
-                FRAGMENT_FORMAT, sequence, ack, ack_bits, i, len(fragments)
-            )
-            packet = header + fragment
-            self.sock.sendto(packet, self.sock.getpeername())
-
-        self.sent_packets.push(Packet(sequence, data))
-
-    def _next_sequence(self) -> int:
-        sequence = self.sequence
-        self.sequence = (self.sequence + 1) % 65536
-        return sequence
-
-    def _get_ack_data(self) -> tuple[int, int]:
-        if not self.acks:
-            return 0, 0
-
-        ack = self.acks[-1]
-        ack_bits = 0
-        for i, seq in enumerate(reversed(self.acks)):
-            if i >= 32:
-                break
-            if (ack - seq) % 65536 < 32:
-                ack_bits |= 1 << ((ack - seq) % 32)
-
-        return ack, ack_bits
-
-    def _update(self) -> None:
-        current_time = time.time()
-        dt = current_time - self.last_update_time
-        self.last_update_time = current_time
-
-        # Update packet loss
-        acked_packets = sum(
-            1
-            for packet in self.sent_packets
-            if packet is not None and packet.send_time <= current_time - self.rtt
-        )
-        total_packets = sum(1 for packet in self.sent_packets if packet is not None)
-        if total_packets > 0:
-            current_packet_loss = 1 - (acked_packets / total_packets)
-            self.packet_loss = (
-                self.packet_loss * (1 - self.packet_loss_smoothing_factor)
-                + current_packet_loss * self.packet_loss_smoothing_factor
-            )
-
-        # Update bandwidth statistics
-        sent_bytes = sum(
-            len(packet.data)
-            for packet in self.sent_packets
-            if packet is not None and packet.send_time > current_time - dt
-        )
-        received_bytes = sum(
-            len(packet.data)
-            for packet in self.received_packets
-            if packet is not None and packet.send_time > current_time - dt
-        )
-        acked_bytes = sum(
-            len(packet.data)
-            for packet in self.sent_packets
-            if packet is not None
-            and packet.send_time <= current_time - self.rtt
-            and packet.send_time > current_time - dt - self.rtt
-        )
-
-        self.sent_bandwidth = (
-            self.sent_bandwidth * (1 - self.bandwidth_smoothing_factor)
-            + (sent_bytes / dt) * self.bandwidth_smoothing_factor
-        )
-        self.received_bandwidth = (
-            self.received_bandwidth * (1 - self.bandwidth_smoothing_factor)
-            + (received_bytes / dt) * self.bandwidth_smoothing_factor
-        )
-        self.acked_bandwidth = (
-            self.acked_bandwidth * (1 - self.bandwidth_smoothing_factor)
-            + (acked_bytes / dt) * self.bandwidth_smoothing_factor
-        )
-
-    def get_stats(self) -> dict[str, float]:
-        return {
-            "rtt": self.rtt,
-            "packet_loss": self.packet_loss,
-            "sent_bandwidth": self.sent_bandwidth,
-            "received_bandwidth": self.received_bandwidth,
-            "acked_bandwidth": self.acked_bandwidth,
-        }
-
-    def _clean_up_old_packets(self, current_time: float) -> None:
-        """Clean up old fragments and check for very old packets."""
-        timeout = max(self.rtt * 4, 1.0)  # Use at least 1 second timeout
-
-        # Clean up fragments
-        self.fragments = {
-            seq: frags
-            for seq, frags in self.fragments.items()
-            if current_time - self._get_packet_send_time(seq) < timeout
-        }
-
-        # Check for very old packets (for diagnostics or connection health)
-        old_sent_packets = sum(
-            1
-            for packet in self.sent_packets
-            if current_time - packet.send_time > timeout
-        )
-        old_received_packets = sum(
-            1
-            for packet in self.received_packets
-            if current_time - packet.send_time > timeout
-        )
-
-        if old_sent_packets > 0 or old_received_packets > 0:
-            print(
-                f"Warning: {old_sent_packets} sent and {old_received_packets} received packets are older than {timeout} seconds"
-            )
-
-    def _get_packet_send_time(self, sequence: int) -> float:
-        """Get the send time of a packet with the given sequence number."""
-        for packet in self.sent_packets:
-            if packet.sequence == sequence:
-                return packet.send_time
-        return 0.0  # Return 0 if packet not found
+        for addr in list(self.clients.keys()):
+            if current_time - self.clients[addr]["time"] > TIMEOUT:
+                del self.clients[addr]
+                print(f"Client {addr} timed out")
 
 
-# Example usage:
+# Example usage
 if __name__ == "__main__":
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("localhost", 12345))
-    sock.connect(("localhost", 54321))
+    server = Server(("localhost", 12345))
+    print("Server started on localhost:12345")
 
-    def process_packet(data: bytes) -> bool:
-        print(f"Received: {data.decode()}")
-        return True
+    while True:
+        server.update()
+        time.sleep(0.01)  # Small delay to prevent busy-waiting
 
-    endpoint = ReliableEndpoint(sock, process_packet_callback=process_packet)
-    endpoint.start()
-
-    try:
-        while True:
-            message = input("Enter message to send: ")
-            endpoint.send_packet(message.encode())
-            print(endpoint.get_stats())
-    except KeyboardInterrupt:
-        print("Shutting down...")
-    finally:
-        endpoint.stop()
-        sock.close()
+# Client usage example:
+# client = Client(('localhost', 12345))
+# client.connect()
+#
+# while True:
+#     client.update()
+#     if client.state == "connected":
+#         client.send_payload(b"Hello, server!")
+#     time.sleep(0.1)
+#
+# client.disconnect()
