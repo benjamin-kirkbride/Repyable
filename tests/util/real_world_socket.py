@@ -6,13 +6,15 @@ import logging
 import logging.config
 import multiprocessing as mp
 import multiprocessing.synchronize
-import queue
 import random
 import socket
 import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
+from queue import Empty
 from typing import Any, Literal, NamedTuple
+
+from faster_fifo import Queue
 
 from repyable.parallel import SafeProcess
 
@@ -42,7 +44,7 @@ class PacketSender(SafeProcess):
         self._socket = socket
         self.empty_send_queue = mp.Event()
 
-        self._queue: mp.SimpleQueue[PacketSendTask] = mp.SimpleQueue()
+        self._queue: Queue[PacketSendTask] = Queue()
         self._heap: list[PacketSendTask] = []
 
     def submit(self, item: Any) -> None:
@@ -51,16 +53,28 @@ class PacketSender(SafeProcess):
 
     def _process_queue(self) -> None:
         """Process the queue of items."""
-        while not self._queue.empty():
-            item = self._queue.get()
+        packet_pushed = False
+        try:
+            items: list[PacketSendTask] = self._queue.get_many(
+                max_messages_to_get=1000, block=False
+            )
+        except Empty:
+            return
+
+        for item in items:
+            if item.scheduled_time <= time.monotonic():
+                # execute the task immediately if it's ready
+                self._execute(item)
+                continue
             heapq.heappush(self._heap, item)
-            if self.empty_send_queue.is_set():
-                self.empty_send_queue.clear()
+        packet_pushed = True
+
+        if packet_pushed and self.empty_send_queue.is_set():
+            self.empty_send_queue.clear()
 
     def user_target(self) -> None:
         """Process the queue of items."""
         stop_check_counter = 0
-        sent_packets = 0
 
         assert self._stop_event is not None
         while True:
@@ -71,29 +85,33 @@ class PacketSender(SafeProcess):
 
             self._process_queue()
             try:
-                task_ready = self._heap[0].scheduled_time - 0.002 <= time.monotonic()
+                while self._heap[0].scheduled_time <= time.monotonic():
+                    task = heapq.heappop(self._heap)
+                    self._execute(task)
             except IndexError:
                 self.empty_send_queue.set()
                 continue
 
-            if task_ready:
-                task = heapq.heappop(self._heap)
-                task_delay = task.scheduled_time - time.monotonic()
-                logger.warning(
-                    f"{self.name}: Task delayed by {task_delay:.3f} seconds."
-                )
+    def _execute(self, task: PacketSendTask) -> None:
+        if task.method == "send":
+            self._send(task.data)
+            return
 
-                if task.method == "send":
-                    self._socket.send(task.data)
-                    continue
+        if task.method == "sendto":
+            assert task.destination_address is not None
+            self._sendto(task.data, task.destination_address)
+            return
 
-                if task.method == "sendto":
-                    assert task.destination_address is not None
-                    self._socket.sendto(task.data, task.destination_address)
-                    continue
+        msg = f"Invalid method: {task.method}"
+        raise ValueError(msg)
 
-                msg = f"Invalid method: {task.method}"
-                raise ValueError(msg)
+    def _send(self, data: bytes) -> None:
+        """Send data to the connected address."""
+        self._socket.send(data)
+
+    def _sendto(self, data: bytes, address: tuple[str, int]) -> None:
+        """Send data to a specific address."""
+        self._socket.sendto(data, address)
 
 
 class RealWorldUDPSocket:
@@ -204,12 +222,13 @@ class RealWorldUDPSocket:
         self._packet_sender.submit(task)
         return len(data)
 
-    def sendto(self, data: bytes, address: tuple[str, int]) -> int:
+    def sendto(
+        self,
+        data: bytes,
+        address: tuple[str, int],
+        delay: float = 0,
+    ) -> int:
         """Send data to a specific address.
-
-        Args:
-            data (bytes): The data to send.
-            address (tuple[str, int]): The address to send the data to.
 
         Returns:
             int: The number of bytes sent.
@@ -222,7 +241,7 @@ class RealWorldUDPSocket:
 
         # schedule the sendto action
         logger.debug(f"{self.name}: Scheduled `sendto` action for {data.decode()=}.")
-        latency = self._simulate_latency()
+        latency = self._simulate_latency() + delay
         if latency < MIN_LATENCY:
             self._socket.sendto(data, address)
             return len(data)
@@ -266,6 +285,7 @@ class RealWorldUDPSocket:
     def _simulate_latency(self) -> float:
         """Simulate latency by delaying the data."""
         jitter = random.random() * self._jitter  # noqa: S311
+        assert 0 <= jitter <= self._jitter
         return self._base_latency + jitter
 
     @property
@@ -301,8 +321,8 @@ class RealWorldUDPSocket:
 
     @jitter.setter
     def jitter(self, value: float) -> None:
-        if not isinstance(value, float):
-            msg = "Jitter must be a float"
+        if not isinstance(value, float | int):
+            msg = f"Jitter must be a float, got {type(value)}"
             raise TypeError(msg)
 
         if value < 0:

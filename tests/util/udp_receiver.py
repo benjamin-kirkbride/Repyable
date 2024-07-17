@@ -3,13 +3,14 @@ from __future__ import annotations
 import contextlib
 import logging
 import multiprocessing as mp
-import queue
 import select
 import socket
 import time
 from typing import TYPE_CHECKING, NamedTuple
 
-from repyable.parallel import SafeProcess, SafeThread
+from faster_fifo import Queue
+
+from repyable.parallel import SafeProcess
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_PACKET_SIZE = 1200
+MAX_PACKET_PER_SECOND = 10_000
 
 
 class ReceivedPacket(NamedTuple):
@@ -34,7 +36,7 @@ class _UDPReceiver(SafeProcess):
         self,
         *,
         sock: socket.socket,
-        receive_queue: mp.Queue[list[ReceivedPacket]],
+        receive_queue: Queue[list[ReceivedPacket]],
         name: str,
         queue_batch: int | None,
         queue_timeout: float,
@@ -43,15 +45,12 @@ class _UDPReceiver(SafeProcess):
         self._socket = sock
         self._queue_batch = queue_batch
         self._queue_timeout = queue_timeout
-        self._receive_queue: mp.Queue[list[ReceivedPacket]] = receive_queue
+        self._receive_queue: Queue[list[ReceivedPacket]] = receive_queue
 
     def _put_in_queue(self) -> None:
         """Put packets in the receive queue."""
         if self.packets:
-            logger.info(
-                f"{self.name}: Putting {len(self.packets)} packets in the queue."
-            )
-            self._receive_queue.put(self.packets)
+            self._receive_queue.put(self.packets, block=False)
             self.handled_packets += len(self.packets)
             self.packets: list[ReceivedPacket] = []
             self._reset_next_queue_time()
@@ -142,7 +141,9 @@ class UDPReceiverServer:
         self._processes = processes
         self._children: list[_UDPReceiver] = []
 
-        self.receive_queue: mp.Queue[list[ReceivedPacket]] = mp.Queue()
+        self.receive_queue: Queue[list[ReceivedPacket]] = Queue(
+            max_size_bytes=1000 * 1000 * 100
+        )
 
         self.started = False
 

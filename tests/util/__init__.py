@@ -2,7 +2,12 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from .udp_receiver import UDPReceiverServer, get_udp_receivers, process_packets
+from .udp_receiver import (
+    MAX_PACKET_PER_SECOND,
+    UDPReceiverServer,
+    get_udp_receivers,
+    process_packets,
+)
 
 __all__ = [
     "repeat_callable",
@@ -10,6 +15,7 @@ __all__ = [
     "Timer",
     "get_udp_receivers",
     "process_packets",
+    "MAX_PACKET_PER_SECOND",
 ]
 
 

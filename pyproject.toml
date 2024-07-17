@@ -25,6 +25,8 @@ dev = [
     "pudb",
     "snakeviz",
     "viztracer",
+    "faster-fifo==1.4.7",
+    "pytest-xdist==3.6.1",
 ]
 
 [tool.ruff]
@@ -49,7 +51,7 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 "**/tests/*" = [
     "D103", # Missing docstring in public function
-    
+    "SLF001", # Private member accessed
 ]
 
 [tool.mypy]
