@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from repyable import MAX_PACKET_SIZE
 from repyable.circular_buffer import CircularBuffer
 
 # Format: sequence (2 bytes), ack (2 bytes), ack_bits (4 bytes)
@@ -29,7 +30,7 @@ class ReliableEndpoint:
     def __init__(
         self,
         sock: socket.socket,
-        max_packet_size: int = 1200,
+        max_packet_size: int = MAX_PACKET_SIZE,
         fragment_above: int = 1000,
         max_fragments: int = 16,
         fragment_size: int = 500,

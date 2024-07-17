@@ -36,21 +36,20 @@ class _UDPReceiver(SafeProcess):
         self,
         *,
         sock: socket.socket,
-        receive_queue: Queue[list[ReceivedPacket]],
+        result_queue: Queue[list[ReceivedPacket]],
         name: str,
         queue_batch: int | None,
         queue_timeout: float,
     ) -> None:
-        super().__init__(name=name)
+        super().__init__(name=name, result_queue=result_queue)
         self._socket = sock
         self._queue_batch = queue_batch
         self._queue_timeout = queue_timeout
-        self._receive_queue: Queue[list[ReceivedPacket]] = receive_queue
 
     def _put_in_queue(self) -> None:
         """Put packets in the receive queue."""
         if self.packets:
-            self._receive_queue.put(self.packets, block=False)
+            self.result_queue.put(self.packets, block=False)
             self.handled_packets += len(self.packets)
             self.packets: list[ReceivedPacket] = []
             self._reset_next_queue_time()
@@ -153,7 +152,7 @@ class UDPReceiverServer:
             logger.debug(f"{self.name}: Starting child {i}")
             receiver = _UDPReceiver(
                 sock=self._socket,
-                receive_queue=self.receive_queue,
+                result_queue=self.receive_queue,
                 name=f"{self.name} child {i}",
                 queue_batch=self._queue_batch,
                 queue_timeout=self._queue_timeout,

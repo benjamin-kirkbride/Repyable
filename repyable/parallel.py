@@ -1,16 +1,14 @@
 import contextlib
 import logging
 import multiprocessing as mp
-import multiprocessing.queues
 import queue
 import threading as td
 import time
 import traceback
 from collections.abc import Callable
-from multiprocessing.connection import Connection
-from multiprocessing.synchronize import Event
-from types import ModuleType
 from typing import Any, Literal, Protocol, runtime_checkable
+
+from faster_fifo import Queue
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +32,7 @@ class SafeParallelMixin(ParallelProtocol):
     def __init__(
         self,
         name: str | None,
-        simple_queue_type: type[mp.SimpleQueue] | type[queue.SimpleQueue],
+        queue_type: type[Queue] | type[queue.SimpleQueue] | None,
         target: Callable[..., Any] | None = None,
     ) -> None:
         """Initializes a Parallel object."""
@@ -52,7 +50,14 @@ class SafeParallelMixin(ParallelProtocol):
         self._parent_exception_conn, self._child_exception_conn = mp.Pipe()
         self._exception: tuple[Exception, str] | None = None
 
-        self.result_queue = simple_queue_type()
+        if queue_type is not None:
+            if queue_type is Queue:
+                queue_kwargs = {"max_size_bytes": 1000 * 1000 * 100}
+            else:
+                queue_kwargs = {}
+            self.result_queue = queue_type(**queue_kwargs)
+        else:
+            assert hasattr(self, "result_queue")
 
     def join(self, timeout: float | None = None) -> None:
         """Join the process."""
@@ -121,12 +126,6 @@ class SafeParallelMixin(ParallelProtocol):
         """Clean up resources."""
         self._child_exception_conn.close()
         self._parent_exception_conn.close()
-        # threading queues do not have close method
-        if isinstance(self.result_queue, multiprocessing.queues.SimpleQueue):
-            self.result_queue.close()
-        else:
-            # Is this necessary?
-            del self.result_queue
 
     def user_target(self) -> Any:
         """The user-defined run method."""
@@ -155,14 +154,24 @@ class SafeProcess(SafeParallelMixin, mp.Process):
         self,
         *args: Any,
         target: Any = None,
+        result_queue: Queue | None = None,
         name: str | None = None,
         daemon: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initializes a SafeProcess object."""
         mp.Process.__init__(self, *args, daemon=daemon, **kwargs)
+
+        if result_queue is not None:
+            self.result_queue = result_queue
+            queue_type = None
+        else:
+            queue_type = Queue
         SafeParallelMixin.__init__(
-            self, target=target, name=name, simple_queue_type=mp.SimpleQueue
+            self,
+            target=target,
+            name=name,
+            queue_type=queue_type,
         )
 
     def run(self) -> None:
@@ -185,14 +194,24 @@ class SafeThread(SafeParallelMixin, td.Thread):
         self,
         *args: Any,
         target: Any = None,
+        result_queue: queue.SimpleQueue | None = None,
         name: str | None = None,
         daemon: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initializes a SafeProcess object."""
         td.Thread.__init__(self, *args, daemon=daemon, **kwargs)
+
+        if result_queue is not None:
+            self.result_queue = result_queue
+            queue_type = None
+        else:
+            queue_type = queue.SimpleQueue
         SafeParallelMixin.__init__(
-            self, target=target, name=name, simple_queue_type=queue.SimpleQueue
+            self,
+            target=target,
+            name=name,
+            queue_type=queue_type,
         )
 
     def run(self) -> None:
