@@ -8,7 +8,9 @@ version = "0.0.1"
 requires-python = ">=3.11"
 
 
-dependencies = []
+dependencies = [
+    "more_itertools==10.3.0",
+]
 
 [project.optional-dependencies]
 
@@ -27,6 +29,7 @@ dev = [
     "viztracer",
     "faster-fifo==1.4.7",
     "pytest-xdist==3.6.1",
+    "bitstring==4.2.3",
 ]
 
 [tool.ruff]
@@ -88,6 +91,6 @@ packages = ["repyable", "tests"]
 python_files = ["test_*.py", "benchmark_*.py"]
 python_classes = ["Test*", "*Benchmark"]
 python_functions = ["test_*", "benchmark_*"]
-log_level = "INFO"
+# log_level = "INFO"
 
 testpaths = ["tests"]

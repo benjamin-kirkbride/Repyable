@@ -3,6 +3,7 @@
     "acked",
     "acks",
     "autouse",
+    "bitstring",
     "caplog",
     "DGRAM",
     "getpid",
@@ -14,6 +15,8 @@
     "pytest",
     "pytestconfig",
     "redef",
-    "repyable"
+    "REPY",
+    "repyable",
+    "tobytes"
   ]
 }
